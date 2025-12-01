@@ -1,0 +1,28 @@
+name: Package app as zip
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-zip:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Create zip archive
+        run: |
+          mkdir -p artifacts
+          zip -r artifacts/app.zip index.html README.md
+
+      - name: Upload zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: formatted-text-app-zip
+          path: artifacts/app.zip
+          retention-days: 14
