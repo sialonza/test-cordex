@@ -3,16 +3,21 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>シンプルAIフォーマッター</title>
+  <title>スケジュール & To-Do プランナー</title>
   <style>
     :root {
       color-scheme: light dark;
-      --bg: #0f172a;
-      --panel: #111827;
+      --bg: #0b1224;
+      --panel: rgba(17, 24, 39, 0.75);
+      --panel-strong: #111827;
       --border: #1f2937;
       --text: #e5e7eb;
+      --muted: #94a3b8;
       --accent: #38bdf8;
       --accent-strong: #0ea5e9;
+      --danger: #f87171;
+      --success: #22c55e;
+      --card: rgba(15, 23, 42, 0.65);
     }
 
     * {
@@ -22,7 +27,7 @@
     body {
       margin: 0;
       font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: radial-gradient(circle at 20% 20%, rgba(56, 189, 248, 0.12), transparent 35%),
+      background: radial-gradient(circle at 15% 20%, rgba(56, 189, 248, 0.12), transparent 35%),
         radial-gradient(circle at 80% 0%, rgba(14, 165, 233, 0.14), transparent 40%),
         var(--bg);
       min-height: 100vh;
@@ -30,63 +35,107 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 24px;
+      padding: 28px;
     }
 
     .app {
-      width: min(880px, 100%);
-      background: rgba(17, 24, 39, 0.75);
+      width: min(1100px, 100%);
+      background: var(--panel);
       border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 28px;
+      border-radius: 18px;
+      padding: 30px;
       box-shadow: 0 20px 80px rgba(0, 0, 0, 0.45);
       backdrop-filter: blur(12px);
     }
 
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+
     h1 {
-      margin: 0 0 6px;
+      margin: 0;
       font-size: 26px;
       letter-spacing: 0.01em;
     }
 
-    p {
-      margin: 0 0 18px;
-      color: #cbd5e1;
+    .hero-text {
+      margin: 4px 0 0;
+      color: var(--muted);
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(56, 189, 248, 0.12);
+      color: var(--accent);
+      padding: 8px 12px;
+      border-radius: 999px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      font-size: 12px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 2fr 1.5fr;
+      gap: 18px;
+      margin-top: 16px;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 18px;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+    }
+
+    .card h2 {
+      margin: 0 0 10px;
+      font-size: 18px;
     }
 
     label {
       font-weight: 600;
       display: block;
-      margin-bottom: 10px;
+      margin-bottom: 6px;
     }
 
-    textarea {
+    input, select, textarea {
       width: 100%;
-      min-height: 160px;
       background: rgba(15, 23, 42, 0.6);
       border: 1px solid var(--border);
       color: var(--text);
-      border-radius: 12px;
-      padding: 14px 16px;
-      font-size: 15px;
-      resize: vertical;
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 14px;
       transition: border-color 0.2s, box-shadow 0.2s;
     }
 
-    textarea:focus {
+    input:focus, select:focus, textarea:focus {
       outline: none;
       border-color: var(--accent);
       box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.25);
     }
 
+    textarea {
+      min-height: 80px;
+      resize: vertical;
+    }
+
     button {
-      margin-top: 14px;
       background: linear-gradient(120deg, var(--accent), var(--accent-strong));
       color: #0b1224;
       border: none;
       border-radius: 12px;
-      padding: 12px 18px;
-      font-size: 15px;
+      padding: 12px 16px;
+      font-size: 14px;
       font-weight: 700;
       cursor: pointer;
       transition: transform 0.15s ease, box-shadow 0.2s ease, opacity 0.2s ease;
@@ -104,229 +153,575 @@
       box-shadow: none;
     }
 
-    .result {
-      margin-top: 24px;
-      padding: 18px;
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      background: rgba(15, 23, 42, 0.55);
-      min-height: 72px;
-      white-space: pre-wrap;
-      line-height: 1.6;
-      color: #e2e8f0;
+    .primary {
+      width: 100%;
+      margin-top: 12px;
     }
 
-    .status {
-      display: inline-flex;
+    .section-title {
+      display: flex;
       align-items: center;
-      gap: 8px;
-      margin-top: 10px;
-      font-size: 14px;
-      color: #94a3b8;
+      gap: 10px;
+      margin-bottom: 10px;
     }
 
-    .badge {
+    .tag {
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      background: rgba(56, 189, 248, 0.12);
-      color: var(--accent);
-      padding: 6px 10px;
       border-radius: 999px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.03em;
+      border: 1px solid var(--border);
+      padding: 4px 10px;
+      color: var(--muted);
       font-size: 12px;
+      background: rgba(255, 255, 255, 0.03);
     }
 
-    .share {
-      margin: 18px 0 24px;
-      padding: 14px 16px;
-      border: 1px dashed var(--border);
-      border-radius: 12px;
-      background: rgba(15, 23, 42, 0.35);
+    .schedule-list, .task-list {
       display: flex;
       flex-direction: column;
       gap: 10px;
+      margin-top: 12px;
+      max-height: 360px;
+      overflow-y: auto;
+      padding-right: 4px;
     }
 
-    .share-label {
-      font-weight: 700;
-      color: #e2e8f0;
+    .item {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px;
+      background: rgba(17, 24, 39, 0.7);
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      align-items: center;
     }
 
-    .share-row {
+    .item-header {
       display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .item-title {
+      margin: 0;
+      font-size: 15px;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 8px;
+      padding: 6px 10px;
+      font-weight: 700;
+      font-size: 12px;
+    }
+
+    .pill.info {
+      background: rgba(56, 189, 248, 0.12);
+      color: var(--accent);
+    }
+
+    .pill.success {
+      background: rgba(34, 197, 94, 0.15);
+      color: var(--success);
+    }
+
+    .pill.danger {
+      background: rgba(248, 113, 113, 0.15);
+      color: var(--danger);
+    }
+
+    .empty {
+      text-align: center;
+      color: var(--muted);
+      padding: 24px 12px;
+      border: 1px dashed var(--border);
+      border-radius: 12px;
+      background: rgba(15, 23, 42, 0.45);
+    }
+
+    .controls {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 12px;
+      margin-top: 10px;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      margin: 16px 0 4px;
+    }
+
+    .summary-tile {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px;
+    }
+
+    .summary-tile h3 {
+      margin: 0 0 6px;
+      font-size: 14px;
+      color: var(--muted);
+    }
+
+    .summary-value {
+      font-size: 22px;
+      font-weight: 800;
+    }
+
+    .inline-inputs {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      justify-content: flex-end;
+    }
+
+    .ghost {
+      background: transparent;
+      border: 1px solid var(--accent);
+      color: var(--accent);
+      box-shadow: none;
+    }
+
+    .task-item {
+      grid-template-columns: auto 1fr auto;
+      gap: 12px;
+    }
+
+    .task-title {
+      margin: 0;
+      font-size: 15px;
+      display: flex;
+      align-items: center;
       gap: 8px;
     }
 
-    .share-row input {
-      flex: 1;
-      padding: 10px 12px;
-      border-radius: 10px;
-      border: 1px solid var(--border);
-      background: rgba(15, 23, 42, 0.6);
-      color: var(--text);
-      font-size: 14px;
+    .task-title input[type="checkbox"] {
+      accent-color: var(--accent);
+      width: 18px;
+      height: 18px;
     }
 
-    .share-row input:focus {
-      outline: none;
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.25);
+    .done .task-title {
+      text-decoration: line-through;
+      color: var(--muted);
     }
 
-    .share .ghost {
-      margin-top: 0;
-      background: transparent;
-      color: var(--accent);
-      border: 1px solid var(--accent);
-      box-shadow: none;
-      padding: 10px 14px;
-    }
-
-    .share .ghost:hover:not(:disabled) {
-      transform: none;
-      box-shadow: 0 10px 25px rgba(56, 189, 248, 0.25);
-    }
-
-    .share-hint {
-      color: #cbd5e1;
+    .task-notes {
+      color: var(--muted);
+      margin-top: 4px;
       font-size: 13px;
     }
 
-    .helper {
-      margin: 0 0 18px;
-      color: #94a3b8;
-      font-size: 14px;
-      line-height: 1.6;
+    .filter-row {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    @media (max-width: 900px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      header {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      .schedule-list, .task-list {
+        max-height: none;
+      }
     }
   </style>
 </head>
 <body>
   <main class="app">
-    <div class="badge" aria-label="mocked AI notice">AI フォーマット (サンプル)</div>
-    <h1>テキスト整形アプリ</h1>
-    <p>GitHub Pages に配置するだけで動くシングルページデモです。デプロイ後は、下の公開 URL をそのまま共有できます。</p>
-
-    <div class="share">
-      <div class="share-label">公開URL（GitHub Pages にデプロイ後、このリンクを共有）</div>
-      <div class="share-row">
-        <input id="public-url" type="text" readonly aria-label="公開URL" />
-        <button id="copy-url" class="ghost">コピー</button>
+    <header>
+      <div>
+        <div class="badge" aria-label="local only">ローカル保存</div>
+        <h1>スケジュール &amp; To-Do プランナー</h1>
+        <p class="hero-text">予定とタスクをまとめて整理し、1日の動きを可視化します。ブラウザ内で完結し、ページを閉じても保存されます。</p>
       </div>
-      <div class="share-hint">Pages が有効化された後に表示される URL 例: https://&lt;GitHubユーザー名&gt;.github.io/&lt;リポジトリ名&gt;/</div>
+      <div class="tag" id="last-saved">保存: -</div>
+    </header>
+
+    <section class="summary" aria-label="サマリー">
+      <div class="summary-tile">
+        <h3>次の予定</h3>
+        <div class="summary-value" id="next-event">-</div>
+        <div class="muted" id="next-event-detail"></div>
+      </div>
+      <div class="summary-tile">
+        <h3>未完了タスク</h3>
+        <div class="summary-value" id="open-tasks">0</div>
+        <div class="muted" id="open-tasks-detail">今日締切: 0</div>
+      </div>
+      <div class="summary-tile">
+        <h3>完了率</h3>
+        <div class="summary-value" id="done-rate">0%</div>
+        <div class="muted">チェック済みタスクの割合</div>
+      </div>
+    </section>
+
+    <div class="grid">
+      <section class="card" aria-label="スケジュール">
+        <div class="section-title">
+          <h2>スケジュール</h2>
+          <span class="tag" id="schedule-count">0 件</span>
+        </div>
+
+        <form id="schedule-form" aria-label="予定の追加フォーム">
+          <div class="inline-inputs">
+            <div>
+              <label for="schedule-title">タイトル</label>
+              <input id="schedule-title" type="text" placeholder="例: クライアントMTG" required />
+            </div>
+            <div>
+              <label for="schedule-date">日付</label>
+              <input id="schedule-date" type="date" required />
+            </div>
+            <div>
+              <label for="schedule-time">開始時間</label>
+              <input id="schedule-time" type="time" />
+            </div>
+          </div>
+          <div class="inline-inputs">
+            <div>
+              <label for="schedule-place">場所・リンク (任意)</label>
+              <input id="schedule-place" type="text" placeholder="例: 第2会議室 / Zoom" />
+            </div>
+            <div>
+              <label for="schedule-note">メモ (任意)</label>
+              <input id="schedule-note" type="text" placeholder="議題や持ち物など" />
+            </div>
+          </div>
+          <button type="submit" class="primary">予定を追加</button>
+        </form>
+
+        <div class="schedule-list" id="schedule-list"></div>
+      </section>
+
+      <section class="card" aria-label="タスク">
+        <div class="section-title">
+          <h2>To-Do</h2>
+          <span class="tag" id="task-count">0 件</span>
+        </div>
+
+        <form id="task-form" aria-label="タスクの追加フォーム">
+          <div class="inline-inputs">
+            <div>
+              <label for="task-title">タスク</label>
+              <input id="task-title" type="text" placeholder="例: 資料ドラフトを送付" required />
+            </div>
+            <div>
+              <label for="task-due">期限 (任意)</label>
+              <input id="task-due" type="date" />
+            </div>
+            <div>
+              <label for="task-priority">優先度</label>
+              <select id="task-priority">
+                <option value="medium">中</option>
+                <option value="high">高</option>
+                <option value="low">低</option>
+              </select>
+            </div>
+          </div>
+          <label for="task-note">メモ (任意)</label>
+          <textarea id="task-note" placeholder="手順やリンク、チェックポイントをメモ"></textarea>
+          <button type="submit" class="primary">タスクを追加</button>
+        </form>
+
+        <div class="filter-row">
+          <label for="task-filter">表示</label>
+          <select id="task-filter">
+            <option value="all">すべて</option>
+            <option value="open">未完了のみ</option>
+            <option value="done">完了のみ</option>
+          </select>
+          <button class="ghost" id="clear-done">完了タスクを削除</button>
+        </div>
+
+        <div class="task-list" id="task-list"></div>
+      </section>
     </div>
-
-    <p class="helper">
-      入力ボックスに自由入力し、**送信** ボタンまたは `⌘/Ctrl + Enter` で送信してください。ページ内でのみ動作し、外部 API には送信しません。
-    </p>
-
-    <label for="text-input">入力テキスト</label>
-    <textarea id="text-input" placeholder="例） こんにちは！この文章を読みやすくしてください。"></textarea>
-
-    <button id="send-btn">送信</button>
-    <div class="status" id="status" aria-live="polite"></div>
-
-    <div class="result" id="result" aria-live="polite">ここに結果が表示されます。</div>
   </main>
 
   <script>
-    const inputEl = document.getElementById("text-input");
-    const buttonEl = document.getElementById("send-btn");
-    const resultEl = document.getElementById("result");
-    const statusEl = document.getElementById("status");
-    const publicUrlEl = document.getElementById("public-url");
-    const copyUrlBtn = document.getElementById("copy-url");
+    const scheduleList = document.getElementById("schedule-list");
+    const taskList = document.getElementById("task-list");
+    const scheduleForm = document.getElementById("schedule-form");
+    const taskForm = document.getElementById("task-form");
+    const scheduleCount = document.getElementById("schedule-count");
+    const taskCount = document.getElementById("task-count");
+    const taskFilter = document.getElementById("task-filter");
+    const clearDoneBtn = document.getElementById("clear-done");
+    const lastSavedEl = document.getElementById("last-saved");
+    const nextEventEl = document.getElementById("next-event");
+    const nextEventDetailEl = document.getElementById("next-event-detail");
+    const openTasksEl = document.getElementById("open-tasks");
+    const openTasksDetailEl = document.getElementById("open-tasks-detail");
+    const doneRateEl = document.getElementById("done-rate");
 
-    const mockAiFormat = (text) => {
-      const normalized = text
-        .trim()
-        .replace(/\s+/g, " ")
-        .replace(/\s*([。！？!?.])\s*/g, "$1 ")
-        .replace(/\s*,\s*/g, ", ")
-        .replace(/\s*\n\s*/g, "\n")
-        .trim();
+    const STORAGE_KEY = "schedule_todo_planner_v1";
 
-      const sentences = normalized
-        .split(/(?<=[。!?！?])\s+/)
-        .map((sentence) => {
-          const trimmed = sentence.trim();
-          if (!trimmed) return "";
-          return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
-        })
-        .filter(Boolean);
-
-      const bulletized = sentences.map((s) => `• ${s}`).join("\n");
-
-      return bulletized || "入力が空です。テキストを入力してください。";
+    const defaultData = {
+      schedules: [
+        {
+          title: "デイリースタンドアップ",
+          date: new Date().toISOString().slice(0, 10),
+          time: "09:30",
+          place: "オンライン",
+          note: "進捗共有 10分",
+        },
+        {
+          title: "プロジェクトレビュー",
+          date: new Date(Date.now() + 86400000).toISOString().slice(0, 10),
+          time: "15:00",
+          place: "会議室B",
+          note: "最新デモを用意",
+        },
+      ],
+      tasks: [
+        {
+          title: "バックログ整理",
+          due: new Date().toISOString().slice(0, 10),
+          priority: "high",
+          note: "チームからの依頼を統合",
+          done: false,
+        },
+        {
+          title: "議事録送付",
+          due: new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10),
+          priority: "medium",
+          note: "テンプレートを使用",
+          done: false,
+        },
+      ],
     };
 
-    const setLoading = (isLoading) => {
-      buttonEl.disabled = isLoading;
-      buttonEl.textContent = isLoading ? "送信中..." : "送信";
-      statusEl.textContent = isLoading ? "AI がテキストを整形しています..." : "";
-    };
-
-    const sendToAi = () => {
-      const userText = inputEl.value;
-      if (!userText.trim()) {
-        resultEl.textContent = "テキストを入力してください。";
-        return;
+    const loadData = () => {
+      try {
+        const stored = localStorage.getItem(STORAGE_KEY);
+        if (stored) {
+          return JSON.parse(stored);
+        }
+      } catch (error) {
+        console.warn("保存データの読み込みに失敗しました", error);
       }
-
-      setLoading(true);
-      resultEl.textContent = "";
-
-      window.setTimeout(() => {
-        const formatted = mockAiFormat(userText);
-        resultEl.textContent = formatted;
-        statusEl.textContent = "整形が完了しました。";
-        setLoading(false);
-      }, 450);
+      return defaultData;
     };
 
-    buttonEl.addEventListener("click", sendToAi);
-    inputEl.addEventListener("keydown", (event) => {
-      if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-        sendToAi();
+    let state = loadData();
+
+    const saveData = () => {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        const now = new Date();
+        lastSavedEl.textContent = `保存: ${now.toLocaleString("ja-JP", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`;
+      } catch (error) {
+        lastSavedEl.textContent = "保存: 失敗";
       }
+    };
+
+    const formatDate = (dateString) => {
+      if (!dateString) return "日付未設定";
+      const date = new Date(dateString);
+      return date.toLocaleDateString("ja-JP", { month: "short", day: "numeric", weekday: "short" });
+    };
+
+    const buildScheduleItem = (item) => {
+      const li = document.createElement("article");
+      li.className = "item";
+
+      const meta = [];
+      if (item.date) meta.push(`${formatDate(item.date)}`);
+      if (item.time) meta.push(item.time);
+      if (item.place) meta.push(item.place);
+
+      li.innerHTML = `
+        <div class="item-header">
+          <h3 class="item-title">${item.title}</h3>
+          <div class="meta">${meta.map((m) => `<span class="tag">${m}</span>`).join("")}</div>
+          ${item.note ? `<div class="muted">${item.note}</div>` : ""}
+        </div>
+        <div class="actions">
+          <button class="ghost" data-action="remove">削除</button>
+        </div>
+      `;
+
+      li.querySelector("[data-action='remove']").addEventListener("click", () => {
+        state.schedules = state.schedules.filter((s) => s !== item);
+        render();
+      });
+
+      return li;
+    };
+
+    const buildTaskItem = (task) => {
+      const article = document.createElement("article");
+      article.className = `item task-item ${task.done ? "done" : ""}`;
+
+      const priorityClass =
+        task.priority === "high" ? "danger" : task.priority === "low" ? "info" : "success";
+      const dueText = task.due ? formatDate(task.due) : "期限未設定";
+
+      article.innerHTML = `
+        <div>
+          <input type="checkbox" aria-label="完了" ${task.done ? "checked" : ""} />
+        </div>
+        <div class="item-header">
+          <h3 class="task-title">${task.title}</h3>
+          <div class="meta">
+            <span class="pill ${priorityClass}">優先度: ${task.priority}</span>
+            <span class="tag">期限: ${dueText}</span>
+          </div>
+          ${task.note ? `<div class="task-notes">${task.note}</div>` : ""}
+        </div>
+        <div class="actions">
+          <button class="ghost" data-action="remove">削除</button>
+        </div>
+      `;
+
+      article.querySelector("input[type='checkbox']").addEventListener("change", (event) => {
+        task.done = event.target.checked;
+        render();
+      });
+
+      article.querySelector("[data-action='remove']").addEventListener("click", () => {
+        state.tasks = state.tasks.filter((t) => t !== task);
+        render();
+      });
+
+      return article;
+    };
+
+    const renderSchedule = () => {
+      scheduleList.innerHTML = "";
+      const sorted = [...state.schedules].sort((a, b) => new Date(a.date + " " + (a.time || "00:00")) - new Date(b.date + " " + (b.time || "00:00")));
+      if (!sorted.length) {
+        scheduleList.innerHTML = '<div class="empty">予定がありません。フォームから追加してください。</div>';
+      }
+      sorted.forEach((item) => scheduleList.appendChild(buildScheduleItem(item)));
+      scheduleCount.textContent = `${sorted.length} 件`;
+    };
+
+    const renderTasks = () => {
+      taskList.innerHTML = "";
+      let tasks = [...state.tasks];
+      if (taskFilter.value === "open") tasks = tasks.filter((t) => !t.done);
+      if (taskFilter.value === "done") tasks = tasks.filter((t) => t.done);
+
+      tasks.sort((a, b) => {
+        if (a.done !== b.done) return a.done ? 1 : -1;
+        if (a.due && b.due) return new Date(a.due) - new Date(b.due);
+        if (a.due) return -1;
+        if (b.due) return 1;
+        return 0;
+      });
+
+      if (!tasks.length) {
+        taskList.innerHTML = '<div class="empty">表示するタスクがありません。</div>';
+      }
+      tasks.forEach((task) => taskList.appendChild(buildTaskItem(task)));
+      taskCount.textContent = `${state.tasks.length} 件`;
+    };
+
+    const renderSummary = () => {
+      const openTasks = state.tasks.filter((t) => !t.done);
+      const doneTasks = state.tasks.filter((t) => t.done);
+      openTasksEl.textContent = openTasks.length;
+
+      const today = new Date().toISOString().slice(0, 10);
+      const dueToday = openTasks.filter((t) => t.due === today).length;
+      openTasksDetailEl.textContent = `今日締切: ${dueToday}`;
+
+      const total = state.tasks.length || 1;
+      const rate = Math.round((doneTasks.length / total) * 100);
+      doneRateEl.textContent = `${rate}%`;
+
+      const upcoming = [...state.schedules]
+        .filter((s) => s.date)
+        .sort((a, b) => new Date(a.date + " " + (a.time || "00:00")) - new Date(b.date + " " + (b.time || "00:00")))[0];
+
+      if (upcoming) {
+        nextEventEl.textContent = upcoming.title;
+        const detail = [formatDate(upcoming.date), upcoming.time].filter(Boolean).join(" / ");
+        nextEventDetailEl.textContent = detail;
+      } else {
+        nextEventEl.textContent = "予定なし";
+        nextEventDetailEl.textContent = "フォームから追加してください";
+      }
+    };
+
+    const render = () => {
+      renderSchedule();
+      renderTasks();
+      renderSummary();
+      saveData();
+    };
+
+    scheduleForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const title = document.getElementById("schedule-title").value.trim();
+      const date = document.getElementById("schedule-date").value;
+      const time = document.getElementById("schedule-time").value;
+      const place = document.getElementById("schedule-place").value.trim();
+      const note = document.getElementById("schedule-note").value.trim();
+      if (!title || !date) return;
+      state.schedules.push({ title, date, time, place, note });
+      scheduleForm.reset();
+      render();
     });
 
-    const derivePublicUrl = () => {
-      const pathSegments = window.location.pathname
-        .split("/")
-        .filter(Boolean);
-      const repoName = pathSegments[0] || "test-cordex";
+    taskForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const title = document.getElementById("task-title").value.trim();
+      const due = document.getElementById("task-due").value;
+      const priority = document.getElementById("task-priority").value;
+      const note = document.getElementById("task-note").value.trim();
+      if (!title) return;
+      state.tasks.push({ title, due, priority, note, done: false });
+      taskForm.reset();
+      render();
+    });
 
-      if (window.location.hostname && window.location.protocol.startsWith("http")) {
-        return window.location.href;
-      }
+    taskFilter.addEventListener("change", render);
 
-      return `https://<GitHubユーザー名>.github.io/${repoName}/`;
-    };
+    clearDoneBtn.addEventListener("click", () => {
+      state.tasks = state.tasks.filter((t) => !t.done);
+      render();
+    });
 
-    const setPublicUrl = () => {
-      publicUrlEl.value = derivePublicUrl();
-    };
-
-    const copyUrl = async () => {
-      try {
-        await navigator.clipboard.writeText(publicUrlEl.value);
-        copyUrlBtn.textContent = "コピー済み";
-        window.setTimeout(() => {
-          copyUrlBtn.textContent = "コピー";
-        }, 1400);
-      } catch (error) {
-        copyUrlBtn.textContent = "コピー失敗";
-        window.setTimeout(() => {
-          copyUrlBtn.textContent = "コピー";
-        }, 1400);
-      }
-    };
-
-    copyUrlBtn.addEventListener("click", copyUrl);
-    setPublicUrl();
+    render();
   </script>
 </body>
 </html>
