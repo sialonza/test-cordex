@@ -112,11 +112,13 @@ def prepare_features(df):
     motor_path = os.path.join(EXTRA_DIR, "motor_stats.csv")
     if os.path.exists(motor_path):
         motor_stats = pd.read_csv(motor_path)
+        motor_stats["jyo_cd"] = motor_stats["jyo_cd"].astype(str).str.zfill(2)
         df = df.merge(motor_stats, on=["jyo_cd", "motor_no"], how="left")
 
     jyo_path = os.path.join(EXTRA_DIR, "jyo_course_stats.csv")
     if os.path.exists(jyo_path):
         jyo_stats = pd.read_csv(jyo_path)
+        jyo_stats["jyo_cd"] = jyo_stats["jyo_cd"].astype(str).str.zfill(2)
         df = df.merge(
             jyo_stats[["jyo_cd", "course", "jyo_course_win_pct", "jyo_course_avg_rank"]],
             on=["jyo_cd", "course"], how="left"
@@ -150,15 +152,15 @@ def main():
 
     # モデル読み込み
     win_model_path = os.path.join(CKPT_DIR, "lgbm_win.txt")
-    top3_model_path = os.path.join(CKPT_DIR, "lgbm_top3.txt")
+    snd_model_path = os.path.join(CKPT_DIR, "lgbm_2nd.txt")
 
-    if not os.path.exists(win_model_path):
+    if not os.path.exists(win_model_path) or not os.path.exists(snd_model_path):
         print("エラー: モデルが見つかりません。先に run_train55k.py を実行してください。")
         return
 
     print("モデル読み込み中...")
     model_win = lgb.Booster(model_file=win_model_path)
-    model_top3 = lgb.Booster(model_file=top3_model_path)
+    model_2nd = lgb.Booster(model_file=snd_model_path)
 
     # 特徴量リスト
     with open(os.path.join(DATA_DIR, "feature_cols.txt")) as f:
@@ -177,60 +179,68 @@ def main():
     X = df[available_features].values
 
     df["prob_win"] = model_win.predict(X)
-    df["prob_top3"] = model_top3.predict(X)
+    df["prob_2nd"] = model_2nd.predict(X)
 
-    # レースごとに予測順位を付ける
-    df["pred_rank_win"] = df.groupby(["jyo_cd", "race_no"])["prob_win"].rank(ascending=False).astype(int)
-    df["pred_rank_top3"] = df.groupby(["jyo_cd", "race_no"])["prob_top3"].rank(ascending=False).astype(int)
+    # 2連単予測: レースごとに1着・2着を確定
+    exacta_rows = []
+    for (jyo_cd, jyo_name, race_no), race_df in df.groupby(["jyo_cd", "jyo_name", "race_no"]):
+        race_df = race_df.copy()
+        # 1着予測: prob_win 最大
+        pred_1st_idx = race_df["prob_win"].idxmax()
+        pred_1st = race_df.loc[pred_1st_idx]
+        # 2着予測: 1着を除いて prob_2nd 最大
+        rest = race_df[race_df.index != pred_1st_idx]
+        pred_2nd_idx = rest["prob_2nd"].idxmax()
+        pred_2nd = rest.loc[pred_2nd_idx]
+
+        # 信頼度スコア: 1着確率 × 2着確率
+        confidence_score = pred_1st["prob_win"] * pred_2nd["prob_2nd"]
+
+        exacta_rows.append({
+            "jyo_cd": jyo_cd,
+            "jyo_name": jyo_name,
+            "race_no": race_no,
+            "course_1st": int(pred_1st["course"]),
+            "class_1st": pred_1st["racer_class"],
+            "prob_win": pred_1st["prob_win"],
+            "course_2nd": int(pred_2nd["course"]),
+            "class_2nd": pred_2nd["racer_class"],
+            "prob_2nd": pred_2nd["prob_2nd"],
+            "confidence_score": confidence_score,
+        })
+
+    exacta_df = pd.DataFrame(exacta_rows)
 
     # 結果表示
     print("\n" + "=" * 80)
-    print("予測結果 (各レースの推奨)")
+    print("2連単 予測結果")
     print("=" * 80)
 
-    for (jyo_cd, jyo_name), jyo_df in df.groupby(["jyo_cd", "jyo_name"]):
+    for (jyo_cd, jyo_name), jyo_df in exacta_df.groupby(["jyo_cd", "jyo_name"]):
         print(f"\n{'━' * 70}")
         print(f"  {jyo_name} ({jyo_cd})")
         print(f"{'━' * 70}")
+        print(f"  {'R':>3}  {'1着→2着':^16}  {'1着確率':>8}  {'2着確率':>8}  信頼")
 
-        for race_no, race_df in jyo_df.groupby("race_no"):
-            race_df = race_df.sort_values("prob_win", ascending=False)
-            top = race_df.iloc[0]
-
-            # 信頼度
-            confidence = "★★★" if top["prob_win"] > 0.35 else "★★" if top["prob_win"] > 0.25 else "★"
-
-            print(f"  {race_no:2d}R | "
-                  f"◎{int(race_df.iloc[0]['course'])}コース({race_df.iloc[0]['racer_class']}) "
-                  f"○{int(race_df.iloc[1]['course'])}コース({race_df.iloc[1]['racer_class']}) "
-                  f"▲{int(race_df.iloc[2]['course'])}コース({race_df.iloc[2]['racer_class']}) "
-                  f"| 1着確率: {top['prob_win']:.1%} {confidence}")
+        for _, row in jyo_df.sort_values("race_no").iterrows():
+            confidence = "★★★" if row["confidence_score"] > 0.08 else "★★" if row["confidence_score"] > 0.04 else "★"
+            print(f"  {int(row['race_no']):2d}R  "
+                  f"{row['course_1st']}コース({row['class_1st']})→{row['course_2nd']}コース({row['class_2nd']})  "
+                  f"{row['prob_win']:>7.1%}  {row['prob_2nd']:>7.1%}  {confidence}")
 
     # 高信頼レースの抽出
     print(f"\n{'=' * 70}")
-    print("高信頼レース (1着確率 > 30%)")
+    print("高信頼 2連単 (信頼スコア上位)")
     print(f"{'=' * 70}")
+    top_exacta = exacta_df.sort_values("confidence_score", ascending=False).head(10)
+    for _, row in top_exacta.iterrows():
+        print(f"  {row['jyo_name']} {int(row['race_no']):2d}R  "
+              f"【{row['course_1st']}-{row['course_2nd']}】  "
+              f"1着{row['prob_win']:.1%} × 2着{row['prob_2nd']:.1%}")
 
-    high_conf = df[df["pred_rank_win"] == 1].copy()
-    high_conf = high_conf[high_conf["prob_win"] > 0.30].sort_values("prob_win", ascending=False)
-
-    if len(high_conf) > 0:
-        for _, row in high_conf.head(10).iterrows():
-            print(f"  {row['jyo_name']} {int(row['race_no']):2d}R "
-                  f"{int(row['course'])}コース ({row['racer_class']}) "
-                  f"勝率{row['win_rate']:.2f} "
-                  f"→ 予測1着確率: {row['prob_win']:.1%}")
-    else:
-        print("  該当なし")
-
-    # 予測結果CSV保存
+    # 予測結果CSV保存 (2連単形式)
     output_path = os.path.join(CKPT_DIR, f"predictions_{datetime.now().strftime('%Y%m%d')}.csv")
-    out_cols = [
-        "jyo_cd", "jyo_name", "race_no", "course", "racer_class",
-        "win_rate", "motor_nirenritsu", "st", "tenji_time",
-        "prob_win", "prob_top3", "pred_rank_win",
-    ]
-    df[out_cols].to_csv(output_path, index=False, encoding="utf-8-sig")
+    exacta_df.to_csv(output_path, index=False, encoding="utf-8-sig")
     print(f"\n予測結果CSV: {output_path}")
 
     print("\n予測完了!")

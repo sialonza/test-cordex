@@ -112,6 +112,9 @@ def engineer_features(df):
     # ターゲット: 1着かどうか (二値分類)
     df["target_win"] = (df["rank"] == 1).astype(int)
 
+    # ターゲット: 2着かどうか (2連単用)
+    df["target_2nd"] = (df["rank"] == 2).astype(int)
+
     # ターゲット: 3着以内かどうか
     df["target_top3"] = (df["rank"] <= 3).astype(int)
 

@@ -5,7 +5,7 @@
   "n_val": 59924,
   "n_test": 59924,
   "best_iteration": 102,
-  "train_time_sec": 8.6,
+  "train_time_sec": 9.7,
   "val_auc": 0.7943,
   "val_logloss": 0.3587,
   "val_accuracy": 0.8519,

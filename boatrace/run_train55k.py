@@ -214,12 +214,49 @@ def main():
         model_name="lgbm_win"
     )
 
-    # 2. 3着以内予測モデル
+    # 2. 2着予測モデル (2連単用)
+    model_2nd, metrics_2nd = train_model(
+        train, val, test, feature_cols,
+        target_col="target_2nd",
+        model_name="lgbm_2nd"
+    )
+
+    # 3. 3着以内予測モデル
     model_top3, metrics_top3 = train_model(
         train, val, test, feature_cols,
         target_col="target_top3",
         model_name="lgbm_top3"
     )
+
+    # 2連単的中率評価 (テストデータ)
+    print("\n" + "=" * 60)
+    print("2連単 的中率評価 (Test)")
+    print("=" * 60)
+    X_test = test[feature_cols].values
+    test_eval = test[["date", "jyo_cd", "race_no", "course", "rank"]].copy()
+    test_eval["prob_win"] = model_win.predict(X_test, num_iteration=model_win.best_iteration)
+    test_eval["prob_2nd"] = model_2nd.predict(X_test, num_iteration=model_2nd.best_iteration)
+
+    results = []
+    for (date, jyo, race), g in test_eval.groupby(["date", "jyo_cd", "race_no"]):
+        # 1着予測: prob_win 最大の艇
+        pred_1st = g.loc[g["prob_win"].idxmax(), "course"]
+        # 2着予測: 1着予測を除いた中で prob_2nd 最大の艇
+        rest = g[g["course"] != pred_1st]
+        pred_2nd = rest.loc[rest["prob_2nd"].idxmax(), "course"] if len(rest) > 0 else -1
+        # 実際の着順
+        actual_1st = g.loc[g["rank"] == 1, "course"].values
+        actual_2nd = g.loc[g["rank"] == 2, "course"].values
+        hit = (
+            len(actual_1st) > 0 and len(actual_2nd) > 0
+            and pred_1st == actual_1st[0]
+            and pred_2nd == actual_2nd[0]
+        )
+        results.append(hit)
+
+    exacta_hit_rate = sum(results) / len(results) if results else 0
+    print(f"2連単的中率: {exacta_hit_rate:.4f} ({exacta_hit_rate:.1%})")
+    print(f"ランダム比較: {1/30:.4f} ({1/30:.1%})  ※6×5=30通り")
 
     # サマリー
     print("\n" + "=" * 60)
@@ -228,6 +265,7 @@ def main():
     print(f"{'モデル':<20} {'Val AUC':<12} {'Test AUC':<12} {'Test Acc':<12}")
     print(f"{'─' * 56}")
     print(f"{'1着予測':<20} {metrics_win['val_auc']:<12.4f} {metrics_win['test_auc']:<12.4f} {metrics_win['test_accuracy']:<12.4f}")
+    print(f"{'2着予測':<20} {metrics_2nd['val_auc']:<12.4f} {metrics_2nd['test_auc']:<12.4f} {metrics_2nd['test_accuracy']:<12.4f}")
     print(f"{'3着以内':<20} {metrics_top3['val_auc']:<12.4f} {metrics_top3['test_auc']:<12.4f} {metrics_top3['test_accuracy']:<12.4f}")
 
     print(f"\nチェックポイント: {CKPT_DIR}")
