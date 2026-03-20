@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 *.pyo
 boatrace/checkpoints/
+boatrace/data/raw/race_results_full.csv
+boatrace/data/raw/race_payouts_full.csv
+boatrace/data/raw/download_full_checkpoint.json
