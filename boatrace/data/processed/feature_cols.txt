@@ -29,3 +29,12 @@ motor_win_pct
 motor_top2_pct
 jyo_course_win_pct
 jyo_course_avg_rank
+win_rate_rank
+st_rank
+tenji_rank
+nirenritsu_rank
+win_rate_vs_avg
+st_vs_avg
+tenji_vs_avg
+motor_rank
+avg_st_rank

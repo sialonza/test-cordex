@@ -65,15 +65,15 @@ def train_model(train, val, test, feature_cols, target_col, model_name):
         "objective": "binary",
         "metric": ["binary_logloss", "auc"],
         "boosting_type": "gbdt",
-        "num_leaves": 63,
-        "learning_rate": 0.05,
+        "num_leaves": 127,
+        "learning_rate": 0.03,
         "feature_fraction": 0.8,
         "bagging_fraction": 0.8,
         "bagging_freq": 5,
-        "min_child_samples": 50,
-        "reg_alpha": 0.1,
+        "min_child_samples": 30,
+        "reg_alpha": 0.05,
         "reg_lambda": 0.1,
-        "max_depth": 8,
+        "max_depth": 10,
         "verbose": -1,
         "seed": 42,
         "n_jobs": -1,
@@ -89,13 +89,13 @@ def train_model(train, val, test, feature_cols, target_col, model_name):
 
     callbacks = [
         lgb.log_evaluation(period=100),
-        lgb.early_stopping(stopping_rounds=50),
+        lgb.early_stopping(stopping_rounds=100),
     ]
 
     model = lgb.train(
         params,
         dtrain,
-        num_boost_round=1000,
+        num_boost_round=2000,
         valid_sets=[dtrain, dval],
         valid_names=["train", "val"],
         callbacks=callbacks,
@@ -133,6 +133,20 @@ def train_model(train, val, test, feature_cols, target_col, model_name):
     print(f"Precision: {test_precision:.4f}")
     print(f"Recall: {test_recall:.4f}")
     print(f"F1: {test_f1:.4f}")
+
+    # レース単位の予測精度 (最も本質的な評価)
+    # 各レースで最高確率の艇を1着予測 → 実際に1着だった割合
+    if target_col == "target_win" and "date" in test.columns and "jyo_cd" in test.columns:
+        test_eval = test[["date", "jyo_cd", "race_no", target_col]].copy()
+        test_eval["pred_prob"] = y_pred_test
+        # レース内で最高確率の艇
+        test_eval["is_top_pred"] = (
+            test_eval.groupby(["date", "jyo_cd", "race_no"])["pred_prob"]
+            .rank(ascending=False) == 1
+        ).astype(int)
+        # 予測1着が実際の1着と一致したレースの割合
+        race_correct = test_eval[test_eval["is_top_pred"] == 1][target_col].mean()
+        print(f"レース単位1着的中率: {race_correct:.4f} (ランダム比較: {1/6:.4f})")
 
     # 特徴量重要度
     importance = pd.DataFrame({

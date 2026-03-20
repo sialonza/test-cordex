@@ -104,6 +104,7 @@ def prepare_features(df):
 
     # 追加統計がある場合はマージ
     racer_path = os.path.join(EXTRA_DIR, "racer_stats.csv")
+
     if os.path.exists(racer_path):
         racer_stats = pd.read_csv(racer_path)
         df = df.merge(racer_stats, on="racer_id", how="left")
@@ -120,6 +121,20 @@ def prepare_features(df):
             jyo_stats[["jyo_cd", "course", "jyo_course_win_pct", "jyo_course_avg_rank"]],
             on=["jyo_cd", "course"], how="left"
         )
+
+    # ─── レース内相対特徴量 (学習時と同じ特徴量を生成) ────────
+    race_group = ["date", "jyo_cd", "race_no"]
+    df["win_rate_rank"] = df.groupby(race_group)["win_rate"].rank(ascending=False)
+    df["st_rank"] = df.groupby(race_group)["st"].rank(ascending=True)
+    df["tenji_rank"] = df.groupby(race_group)["tenji_time"].rank(ascending=True)
+    df["nirenritsu_rank"] = df.groupby(race_group)["nirenritsu"].rank(ascending=False)
+    df["win_rate_vs_avg"] = df["win_rate"] - df.groupby(race_group)["win_rate"].transform("mean")
+    df["st_vs_avg"] = df["st"] - df.groupby(race_group)["st"].transform("mean")
+    df["tenji_vs_avg"] = df["tenji_time"] - df.groupby(race_group)["tenji_time"].transform("mean")
+    df["motor_rank"] = df.groupby(race_group)["motor_nirenritsu"].rank(ascending=False)
+    avg_st_col = "avg_st" if "avg_st" in df.columns else "st"
+    df["avg_st_rank"] = df.groupby(race_group)[avg_st_col].rank(ascending=True)
+    # ────────────────────────────────────────────────────────
 
     # 欠損値処理
     numeric_cols = df.select_dtypes(include=[np.number]).columns

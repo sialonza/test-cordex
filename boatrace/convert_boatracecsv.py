@@ -83,6 +83,32 @@ def engineer_features(df):
         df["win_rate"] * 10
     )
 
+    # ─── レース内相対特徴量 ───────────────────────────────────
+    # 同一レース内での各指標の順位・差分を計算
+    # これによりモデルが「このレースで誰が一番強いか」を学習できる
+    race_group = ["date", "jyo_cd", "race_no"]
+
+    # 勝率の順位 (1=最高)
+    df["win_rate_rank"] = df.groupby(race_group)["win_rate"].rank(ascending=False)
+    # STの順位 (1=最速)
+    df["st_rank"] = df.groupby(race_group)["st"].rank(ascending=True)
+    # 展示タイムの順位 (1=最速)
+    df["tenji_rank"] = df.groupby(race_group)["tenji_time"].rank(ascending=True)
+    # 2連対率の順位 (1=最高)
+    df["nirenritsu_rank"] = df.groupby(race_group)["nirenritsu"].rank(ascending=False)
+
+    # レース平均との差分
+    df["win_rate_vs_avg"] = df["win_rate"] - df.groupby(race_group)["win_rate"].transform("mean")
+    df["st_vs_avg"] = df["st"] - df.groupby(race_group)["st"].transform("mean")
+    df["tenji_vs_avg"] = df["tenji_time"] - df.groupby(race_group)["tenji_time"].transform("mean")
+
+    # モーター2連対率のレース内順位
+    df["motor_rank"] = df.groupby(race_group)["motor_nirenritsu"].rank(ascending=False)
+
+    # avg_st (集計済み) のレース内順位
+    df["avg_st_rank"] = df.groupby(race_group)["avg_st"].rank(ascending=True)
+    # ────────────────────────────────────────────────────────
+
     # ターゲット: 1着かどうか (二値分類)
     df["target_win"] = (df["rank"] == 1).astype(int)
 
@@ -142,6 +168,10 @@ def main():
         "avg_rank", "win_pct", "top2_pct", "top3_pct", "avg_st", "avg_tenji",
         "motor_avg_rank", "motor_win_pct", "motor_top2_pct",
         "jyo_course_win_pct", "jyo_course_avg_rank",
+        # レース内相対特徴量
+        "win_rate_rank", "st_rank", "tenji_rank", "nirenritsu_rank",
+        "win_rate_vs_avg", "st_vs_avg", "tenji_vs_avg",
+        "motor_rank", "avg_st_rank",
     ]
 
     with open(os.path.join(PROC_DIR, "feature_cols.txt"), "w") as f:
