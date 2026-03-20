@@ -9,6 +9,7 @@ import os
 import time
 import zipfile
 import requests
+import numpy as np
 from datetime import datetime, timedelta
 from io import BytesIO
 
@@ -21,10 +22,55 @@ BASE_URL = "https://www1.mbrace.or.jp/od2/K/{ym}/k{ymd}.lzh"
 # lzh が取得できない場合のフォールバック(txt直接)
 # 実際の公式データは認証が必要な場合があるため、デモ用に合成データを生成する
 
+TAKE_RATE_2ND = 0.225   # 2連単控除率 22.5%
+TOTAL_POOL = 100_000    # 仮想総売上 (比率の計算に使用)
+
+
+def simulate_payout(adjusted_weights, finish_order):
+    """
+    パリミュチュエル方式で2連単払戻金を計算する。
+
+    adjusted_weights : shape (6,), レース実際の強さ反映済み確率
+    finish_order     : shape (6,), 着順コース (0-indexed)
+    return           : 2連単払戻金 (100円単位, 最低100円)
+    """
+    # 購買者は「やや実力を反映した公衆確率」で賭ける
+    # 人気馬への過剰投票 (over-bet) を再現するため α < 1.0 の冪乗で平坦化
+    public_weights = adjusted_weights ** 0.65
+    public_weights /= public_weights.sum()
+
+    # 2連単30通りの公衆投票比率
+    combo_weights = {}
+    for i in range(6):         # 1着
+        for j in range(6):     # 2着
+            if i == j:
+                continue
+            combo_weights[(i, j)] = public_weights[i] * (public_weights[j] / (1 - public_weights[i]))
+
+    # ノイズを加える (小額レースのばらつき)
+    noise = {k: v * np.random.lognormal(0, 0.25) for k, v in combo_weights.items()}
+    total_noise = sum(noise.values())
+    combo_bets = {k: v / total_noise * TOTAL_POOL for k, v in noise.items()}
+
+    # 的中組み合わせ
+    win_1st = finish_order[0]
+    win_2nd = finish_order[1]
+    win_key = (win_1st, win_2nd)
+
+    bets_on_winner = combo_bets.get(win_key, 1.0)
+    payout_raw = TOTAL_POOL * (1 - TAKE_RATE_2ND) / bets_on_winner * 100  # 100円あたり
+
+    # 最低払戻100円、100円単位切り捨て
+    payout = max(100, int(payout_raw / 100) * 100)
+
+    # コース番号 (1-indexed) で返す
+    return win_1st + 1, win_2nd + 1, payout
+
 def generate_synthetic_race_data(start_date, end_date):
     """
     公式データへのアクセスが制限されているため、
     実際のボートレースの統計分布に基づいた合成データを生成する。
+    払戻データ (race_payouts) も同時生成する。
     """
     import numpy as np
     np.random.seed(42)
@@ -39,6 +85,7 @@ def generate_synthetic_race_data(start_date, end_date):
     ]
 
     records = []
+    payout_records = []   # 払戻データ
     current = start_date
     race_id = 0
 
@@ -90,6 +137,17 @@ def generate_synthetic_race_data(start_date, end_date):
                 course_rank = [0] * 6
                 for rank, course in enumerate(finish_order):
                     course_rank[course] = rank + 1
+
+                # 2連単払戻金シミュレーション
+                pay_1st, pay_2nd, payout_2nd = simulate_payout(adjusted_weights, finish_order)
+                payout_records.append({
+                    "date": current.strftime("%Y-%m-%d"),
+                    "jyo_cd": jyo_codes[jyo_idx],
+                    "race_no": race_num,
+                    "rank1_course": pay_1st,
+                    "rank2_course": pay_2nd,
+                    "payout_2nd": payout_2nd,
+                })
 
                 # 決まり手
                 winner_course = finish_order[0]
@@ -160,7 +218,7 @@ def generate_synthetic_race_data(start_date, end_date):
 
         current += timedelta(days=1)
 
-    return records
+    return records, payout_records
 
 
 def main():
@@ -175,7 +233,7 @@ def main():
     print(f"対象期間: {start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')}")
     print("合成データを生成中...")
 
-    records = generate_synthetic_race_data(start_date, end_date)
+    records, payout_records = generate_synthetic_race_data(start_date, end_date)
     print(f"生成レコード数: {len(records):,}")
 
     # CSV出力
@@ -185,6 +243,12 @@ def main():
     df.to_csv(out_path, index=False, encoding="utf-8-sig")
     print(f"保存先: {out_path}")
     print(f"ファイルサイズ: {os.path.getsize(out_path) / 1024 / 1024:.1f} MB")
+
+    payout_df = pd.DataFrame(payout_records)
+    payout_path = os.path.join(RAW_DIR, "race_payouts.csv")
+    payout_df.to_csv(payout_path, index=False, encoding="utf-8-sig")
+    print(f"払戻データ: {payout_path} ({len(payout_df):,} レース)")
+
     print("完了!")
 
 

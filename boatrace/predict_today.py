@@ -145,6 +145,21 @@ def prepare_features(df):
     return df
 
 
+TAKE_RATE = 0.225  # 2連単控除率
+
+
+def breakeven_odds(prob_exacta):
+    """
+    損益分岐オッズ (100円ベット時) を返す。
+    「実際の払戻がこの値以上なら期待値プラス」という下限値。
+
+    breakeven = 100 / prob_exacta
+    例: 10%確率なら 1,000円以上の払戻で期待値プラス
+    """
+    p = max(prob_exacta, 1e-6)
+    return round(100 / p / 100) * 100  # 100円単位切り上げ
+
+
 def main():
     print("=" * 60)
     print(f"ボートレース予測 - {datetime.now().strftime('%Y-%m-%d')}")
@@ -193,8 +208,8 @@ def main():
         pred_2nd_idx = rest["prob_2nd"].idxmax()
         pred_2nd = rest.loc[pred_2nd_idx]
 
-        # 信頼度スコア: 1着確率 × 2着確率
-        confidence_score = pred_1st["prob_win"] * pred_2nd["prob_2nd"]
+        prob_exacta = pred_1st["prob_win"] * pred_2nd["prob_2nd"]
+        be_odds = breakeven_odds(prob_exacta)
 
         exacta_rows.append({
             "jyo_cd": jyo_cd,
@@ -206,7 +221,8 @@ def main():
             "course_2nd": int(pred_2nd["course"]),
             "class_2nd": pred_2nd["racer_class"],
             "prob_2nd": pred_2nd["prob_2nd"],
-            "confidence_score": confidence_score,
+            "prob_exacta": prob_exacta,
+            "breakeven_odds": be_odds,  # この配当以上なら期待値プラス
         })
 
     exacta_df = pd.DataFrame(exacta_rows)
@@ -217,30 +233,34 @@ def main():
     print("=" * 80)
 
     for (jyo_cd, jyo_name), jyo_df in exacta_df.groupby(["jyo_cd", "jyo_name"]):
-        print(f"\n{'━' * 70}")
+        print(f"\n{'━' * 78}")
         print(f"  {jyo_name} ({jyo_cd})")
-        print(f"{'━' * 70}")
-        print(f"  {'R':>3}  {'1着→2着':^16}  {'1着確率':>8}  {'2着確率':>8}  信頼")
+        print(f"{'━' * 78}")
+        print(f"  {'R':>3}  {'1着→2着':^18}  {'1着%':>6}  {'2着%':>6}  {'損益分岐オッズ':>12}")
 
         for _, row in jyo_df.sort_values("race_no").iterrows():
-            confidence = "★★★" if row["confidence_score"] > 0.08 else "★★" if row["confidence_score"] > 0.04 else "★"
             print(f"  {int(row['race_no']):2d}R  "
-                  f"{row['course_1st']}コース({row['class_1st']})→{row['course_2nd']}コース({row['class_2nd']})  "
-                  f"{row['prob_win']:>7.1%}  {row['prob_2nd']:>7.1%}  {confidence}")
+                  f"{row['course_1st']}({row['class_1st']})→{row['course_2nd']}({row['class_2nd']})  "
+                  f"{row['prob_win']:>5.1%}  {row['prob_2nd']:>5.1%}  "
+                  f"  {row['breakeven_odds']:>6}円以上なら買い")
 
-    # 高信頼レースの抽出
-    print(f"\n{'=' * 70}")
-    print("高信頼 2連単 (信頼スコア上位)")
-    print(f"{'=' * 70}")
-    top_exacta = exacta_df.sort_values("confidence_score", ascending=False).head(10)
-    for _, row in top_exacta.iterrows():
-        print(f"  {row['jyo_name']} {int(row['race_no']):2d}R  "
-              f"【{row['course_1st']}-{row['course_2nd']}】  "
-              f"1着{row['prob_win']:.1%} × 2着{row['prob_2nd']:.1%}")
+    # 損益分岐オッズが低い = 低オッズでも勝てる強い組み合わせ
+    print(f"\n{'=' * 78}")
+    print("注目 2連単 (損益分岐オッズが低い順 = モデル確信度が高い)")
+    print(f"{'=' * 78}")
+    print(f"  {'場':>6} {'R':>3}  {'組み合わせ':^14}  {'2連単確率':>10}  {'損益分岐':>10}")
+    top = exacta_df.sort_values("breakeven_odds").head(10)
+    for _, row in top.iterrows():
+        print(f"  {row['jyo_name']:>6} {int(row['race_no']):>3}R  "
+              f"【{row['course_1st']}-{row['course_2nd']}】({row['class_1st']}→{row['class_2nd']})  "
+              f"{row['prob_exacta']:>9.1%}  {row['breakeven_odds']:>8}円")
+
+    print(f"\n※ 実際のオッズが「損益分岐オッズ」を超えていれば期待値プラスの買い目。")
+    print(f"   backtest_ev.py を実行するとROI・資金曲線も確認できます。")
 
     # 予測結果CSV保存 (2連単形式)
     output_path = os.path.join(CKPT_DIR, f"predictions_{datetime.now().strftime('%Y%m%d')}.csv")
-    exacta_df.to_csv(output_path, index=False, encoding="utf-8-sig")
+    exacta_df.drop(columns=["prob_exacta"], errors="ignore").to_csv(output_path, index=False, encoding="utf-8-sig")
     print(f"\n予測結果CSV: {output_path}")
 
     print("\n予測完了!")
