@@ -63,25 +63,23 @@ def load_data(results_file=None, payouts_file=None):
 def _rolling_rate(df, groupby_cols, value_col, window_days, min_periods=5, date_col='date'):
     """
     各行の過去window_days日間の value_col の平均を計算（当日は除く）。
-    groupby_cols でグループ化。
+    groupby_cols でグループ化。pandas time-based rolling で高速化。
     """
-    df = df.copy()
-    key = f"{'_'.join(str(c) for c in groupby_cols)}_roll{window_days}_{value_col}"
-    result = []
+    df_work = df[groupby_cols + [date_col, value_col]].copy()
+    df_work['__orig_idx__'] = df.index
+    df_work = df_work.sort_values(date_col)
 
-    for group_vals, gdf in df.groupby(groupby_cols, sort=False):
+    window_str = f'{window_days}D'
+    results = []
+
+    for _, gdf in df_work.groupby(groupby_cols, sort=False):
         gdf = gdf.sort_values(date_col)
-        dates = gdf[date_col].values
-        vals  = gdf[value_col].values
-        out   = np.full(len(gdf), np.nan)
-        for i in range(len(gdf)):
-            cutoff = dates[i] - np.timedelta64(window_days, 'D')
-            mask = (dates < dates[i]) & (dates >= cutoff)
-            if mask.sum() >= min_periods:
-                out[i] = np.nanmean(vals[mask])
-        result.append(pd.Series(out, index=gdf.index))
+        s = gdf.set_index(date_col)[value_col]
+        # closed='left': [t-window, t) — 当日を除く
+        rolled = s.rolling(window_str, min_periods=min_periods, closed='left').mean()
+        results.append(pd.Series(rolled.values, index=gdf['__orig_idx__'].values))
 
-    return pd.concat(result).sort_index()
+    return pd.concat(results).sort_index()
 
 
 def add_racer_features(df, windows=(90, 180)):
@@ -187,13 +185,11 @@ def add_implied_probability(df):
 
 def build_race_level_features(df):
     """
-    1行 = 1レース (コース1の選手視点) でのレース予測用特徴量を構築。
+    1行 = 1レース でのレース予測用特徴量を構築。pivot_table で高速化。
     実戦では「レース前に知れる情報」のみ使用。
     """
     race_keys = ['date', 'jyo_cd', 'race_no']
 
-    # 各コースの選手情報をピボット
-    courses = [1, 2, 3, 4, 5, 6]
     feature_cols = [
         'racer_course_win90', 'racer_course_top2_90',
         'racer_course_win180', 'racer_course_top2_180',
@@ -203,44 +199,33 @@ def build_race_level_features(df):
         'tenji_rel', 'st_rel',
         'venue_course_win180',
     ]
+    available_feat = [c for c in feature_cols if c in df.columns]
 
-    records = []
-    for (date, jyo_cd, race_no), gdf in df.groupby(race_keys):
-        row = {'date': date, 'jyo_cd': jyo_cd, 'race_no': race_no}
-        # 会場・天候は共通
-        row['weather_num']  = gdf['weather_num'].iloc[0] if 'weather_num' in gdf.columns else 0
-        row['wind_speed']   = gdf['wind_speed'].iloc[0] if 'wind_speed' in gdf.columns else 0
-        row['wave']         = gdf['wave'].iloc[0] if 'wave' in gdf.columns else 0
-        row['rough_score']  = gdf['rough_score'].iloc[0] if 'rough_score' in gdf.columns else 0
-        row['race_importance'] = gdf['race_importance'].iloc[0] if 'race_importance' in gdf.columns else 1
+    # コース別特徴量をピボット (各コースの列を c{course}_{feat} に展開)
+    pivot = df.pivot_table(
+        index=race_keys, columns='course', values=available_feat, aggfunc='first'
+    )
+    pivot.columns = [f'c{int(c)}_{f}' for f, c in pivot.columns]
+    pivot = pivot.reset_index()
 
-        # コース別の払戻（ターゲット）
-        if 'payout_win' in gdf.columns:
-            row['payout_win'] = gdf['payout_win'].iloc[0]
-        if 'payout_exacta' in gdf.columns:
-            row['payout_exacta'] = gdf['payout_exacta'].iloc[0]
-            row['exacta_1st'] = gdf['exacta_1st'].iloc[0] if 'exacta_1st' in gdf.columns else np.nan
-            row['exacta_2nd'] = gdf['exacta_2nd'].iloc[0] if 'exacta_2nd' in gdf.columns else np.nan
-        if 'payout_trifecta' in gdf.columns:
-            row['payout_trifecta'] = gdf['payout_trifecta'].iloc[0]
+    # レース共通情報 (最初の行)
+    common_cols = ['weather_num', 'wind_speed', 'wave', 'rough_score', 'race_importance']
+    payout_cols = ['payout_win', 'payout_exacta', 'payout_trifecta', 'exacta_1st', 'exacta_2nd']
+    all_common = [c for c in common_cols + payout_cols if c in df.columns]
 
-        # 1着コース
-        winner = gdf[gdf['rank'] == 1]
-        row['winner_course'] = int(winner['course'].iloc[0]) if len(winner) > 0 else np.nan
+    common = df.groupby(race_keys)[all_common].first().reset_index()
 
-        for course in courses:
-            cdf = gdf[gdf['course'] == course]
-            if len(cdf) == 0:
-                for fc in feature_cols:
-                    row[f'c{course}_{fc}'] = np.nan
-            else:
-                r = cdf.iloc[0]
-                for fc in feature_cols:
-                    row[f'c{course}_{fc}'] = r.get(fc, np.nan)
+    # 1着コース
+    winner = (df[df['rank'] == 1]
+              .groupby(race_keys)['course']
+              .first()
+              .rename('winner_course')
+              .reset_index())
 
-        records.append(row)
+    race_df = pivot.merge(common, on=race_keys, how='left')
+    race_df = race_df.merge(winner, on=race_keys, how='left')
 
-    return pd.DataFrame(records)
+    return race_df
 
 
 def build_features(results_file=None, payouts_file=None, out_prefix='v3'):

@@ -25,9 +25,18 @@ except ImportError:
     print("LightGBM未インストール。sklearn fallbackを使用します。")
 
 from sklearn.ensemble import GradientBoostingClassifier
-from sklearn.calibration import CalibratedClassifierCV
-from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import log_loss, roc_auc_score
+
+class PlattCalibratedModel:
+    """LightGBM + Platt scaling (picklable)"""
+    def __init__(self, base, platt):
+        self.base = base
+        self.platt = platt
+    def predict_proba(self, X):
+        raw = self.base.predict_proba(X)[:, 1].reshape(-1, 1)
+        return self.platt.predict_proba(raw)
+
 
 DATA_DIR  = Path(__file__).parent / "data"
 PROC_DIR  = DATA_DIR / "processed"
@@ -94,10 +103,12 @@ def train_course_model(train, val, feat_cols, course):
         )
         model.fit(X_tr, y_tr)
 
-    # 確率キャリブレーション (Platt scaling)
-    cal = CalibratedClassifierCV(model, cv='prefit', method='sigmoid')
-    cal.fit(X_va, y_va)
+    # 確率キャリブレーション (Platt scaling: valセットでLogisticRegressionを当てる)
+    raw_va = model.predict_proba(X_va)[:, 1].reshape(-1, 1)
+    platt = LogisticRegression(C=1.0, max_iter=1000)
+    platt.fit(raw_va, y_va)
 
+    cal = PlattCalibratedModel(model, platt)
     y_pred = cal.predict_proba(X_va)[:, 1]
     auc = roc_auc_score(y_va, y_pred)
     ll  = log_loss(y_va, y_pred)
