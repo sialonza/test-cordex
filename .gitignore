@@ -6,3 +6,7 @@ boatrace/data/raw/race_results_full.csv
 boatrace/data/raw/race_payouts_full.csv
 boatrace/data/raw/download_full_checkpoint.json
 boatrace/download_full.log
+boatrace/v3_features.log
+boatrace/v3_train.log
+boatrace/data/processed/v3full_*.csv
+boatrace/data/processed/v3full_feature_cols.txt
