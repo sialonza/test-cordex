@@ -10,6 +10,7 @@ backtest_ev.py
 """
 
 import os
+import json
 import numpy as np
 import pandas as pd
 import lightgbm as lgb
@@ -27,11 +28,25 @@ def load_models():
     model_2nd = lgb.Booster(model_file=os.path.join(CKPT_DIR, "lgbm_2nd.txt"))
     with open(os.path.join(DATA_DIR, "feature_cols.txt")) as f:
         feature_cols = [l.strip() for l in f if l.strip()]
-    return model_win, model_2nd, feature_cols
+
+    thr_path = os.path.join(CKPT_DIR, "thresholds.json")
+    if os.path.exists(thr_path):
+        with open(thr_path) as f:
+            thresholds = json.load(f)
+        print(f"最適閾値を読み込み: {thresholds}")
+    else:
+        thresholds = {"lgbm_win": 0.5, "lgbm_2nd": 0.5}
+
+    return model_win, model_2nd, feature_cols, thresholds
 
 
-def predict_exacta(test_df, model_win, model_2nd, feature_cols):
+def predict_exacta(test_df, model_win, model_2nd, feature_cols, thresholds=None):
     """テストデータ全レースの2連単予測を返す DataFrame。"""
+    if thresholds is None:
+        thresholds = {"lgbm_win": 0.5, "lgbm_2nd": 0.5}
+    thr_win = thresholds.get("lgbm_win", 0.5)
+    thr_2nd = thresholds.get("lgbm_2nd", 0.5)
+
     available = [c for c in feature_cols if c in test_df.columns]
     X = test_df[available].values
 
@@ -41,15 +56,21 @@ def predict_exacta(test_df, model_win, model_2nd, feature_cols):
 
     rows = []
     for (date, jyo_cd, race_no), g in test_df.groupby(["date", "jyo_cd", "race_no"]):
-        # 1着予測
-        idx1 = g["prob_win"].idxmax()
+        # 1着予測: prob_win が閾値超えの中で最大 (なければ確率最大)
+        win_cands = g[g["prob_win"] >= thr_win]
+        if len(win_cands) == 0:
+            win_cands = g
+        idx1 = win_cands["prob_win"].idxmax()
         c1   = g.loc[idx1, "course"]
         p1   = g.loc[idx1, "prob_win"]
-        # 2着予測 (1着除外)
+        # 2着予測: 1着除外後 prob_2nd が閾値超えの中で最大
         rest = g[g.index != idx1]
         if len(rest) == 0:
             continue
-        idx2 = rest["prob_2nd"].idxmax()
+        snd_cands = rest[rest["prob_2nd"] >= thr_2nd]
+        if len(snd_cands) == 0:
+            snd_cands = rest
+        idx2 = snd_cands["prob_2nd"].idxmax()
         c2   = rest.loc[idx2, "course"]
         p2   = rest.loc[idx2, "prob_2nd"]
 
@@ -201,14 +222,14 @@ def main():
     print("2連単 期待値バックテスト")
     print("=" * 70)
 
-    model_win, model_2nd, feature_cols = load_models()
+    model_win, model_2nd, feature_cols, thresholds = load_models()
 
     print("テストデータ読み込み中...")
     test = pd.read_csv(os.path.join(DATA_DIR, "test.csv"))
     print(f"テストサンプル: {len(test):,}  ({test['date'].min()} ~ {test['date'].max()})")
 
     print("2連単予測中...")
-    pred_df = predict_exacta(test, model_win, model_2nd, feature_cols)
+    pred_df = predict_exacta(test, model_win, model_2nd, feature_cols, thresholds)
 
     print("払戻データをマージ中...")
     pred_df = attach_payouts(pred_df)

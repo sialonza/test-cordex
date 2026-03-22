@@ -16,7 +16,7 @@ import lightgbm as lgb
 from sklearn.metrics import (
     accuracy_score, roc_auc_score, log_loss,
     precision_score, recall_score, f1_score,
-    classification_report
+    precision_recall_curve,
 )
 import joblib
 
@@ -43,7 +43,17 @@ def load_data():
     return train, val, test, available
 
 
-def train_model(train, val, test, feature_cols, target_col, model_name):
+def find_best_threshold(y_true, y_prob):
+    """F1スコアを最大化する閾値をval予測で探索する。"""
+    precisions, recalls, thresholds = precision_recall_curve(y_true, y_prob)
+    # precision_recall_curve は thresholds が len-1 なので末尾を揃える
+    f1s = 2 * precisions[:-1] * recalls[:-1] / (precisions[:-1] + recalls[:-1] + 1e-9)
+    best_idx = int(np.argmax(f1s))
+    return float(thresholds[best_idx]), float(f1s[best_idx])
+
+
+def train_model(train, val, test, feature_cols, target_col, model_name,
+                scale_pos_weight=None):
     """LightGBMモデルの学習と評価"""
     print(f"\n{'─' * 50}")
     print(f"モデル: {model_name} (target={target_col})")
@@ -78,6 +88,9 @@ def train_model(train, val, test, feature_cols, target_col, model_name):
         "seed": 42,
         "n_jobs": -1,
     }
+    if scale_pos_weight is not None:
+        params["scale_pos_weight"] = scale_pos_weight
+        print(f"scale_pos_weight: {scale_pos_weight}")
 
     # データセット作成
     dtrain = lgb.Dataset(X_train, label=y_train, feature_name=feature_cols)
@@ -108,20 +121,24 @@ def train_model(train, val, test, feature_cols, target_col, model_name):
     y_pred_val = model.predict(X_val, num_iteration=model.best_iteration)
     y_pred_test = model.predict(X_test, num_iteration=model.best_iteration)
 
+    # val で最適閾値を探索 (F1最大化)
+    best_thr, best_val_f1 = find_best_threshold(y_val, y_pred_val)
+    print(f"最適閾値 (val F1最大): {best_thr:.4f}  (val F1={best_val_f1:.4f})")
+
     # 評価
     print(f"\n--- Validation ---")
     val_auc = roc_auc_score(y_val, y_pred_val)
     val_logloss = log_loss(y_val, y_pred_val)
-    val_pred_binary = (y_pred_val > 0.5).astype(int)
+    val_pred_binary = (y_pred_val > best_thr).astype(int)
     val_acc = accuracy_score(y_val, val_pred_binary)
     print(f"AUC: {val_auc:.4f}")
     print(f"LogLoss: {val_logloss:.4f}")
-    print(f"Accuracy: {val_acc:.4f}")
+    print(f"Accuracy (@thr={best_thr:.3f}): {val_acc:.4f}")
 
     print(f"\n--- Test ---")
     test_auc = roc_auc_score(y_test, y_pred_test)
     test_logloss = log_loss(y_test, y_pred_test)
-    test_pred_binary = (y_pred_test > 0.5).astype(int)
+    test_pred_binary = (y_pred_test > best_thr).astype(int)
     test_acc = accuracy_score(y_test, test_pred_binary)
     test_precision = precision_score(y_test, test_pred_binary, zero_division=0)
     test_recall = recall_score(y_test, test_pred_binary, zero_division=0)
@@ -129,7 +146,7 @@ def train_model(train, val, test, feature_cols, target_col, model_name):
 
     print(f"AUC: {test_auc:.4f}")
     print(f"LogLoss: {test_logloss:.4f}")
-    print(f"Accuracy: {test_acc:.4f}")
+    print(f"Accuracy (@thr={best_thr:.3f}): {test_acc:.4f}")
     print(f"Precision: {test_precision:.4f}")
     print(f"Recall: {test_recall:.4f}")
     print(f"F1: {test_f1:.4f}")
@@ -176,9 +193,11 @@ def train_model(train, val, test, feature_cols, target_col, model_name):
         "n_test": len(X_test),
         "best_iteration": model.best_iteration,
         "train_time_sec": round(elapsed, 1),
+        "scale_pos_weight": scale_pos_weight,
+        "best_threshold": round(best_thr, 4),
         "val_auc": round(val_auc, 4),
         "val_logloss": round(val_logloss, 4),
-        "val_accuracy": round(val_acc, 4),
+        "val_f1_at_best_thr": round(best_val_f1, 4),
         "test_auc": round(test_auc, 4),
         "test_logloss": round(test_logloss, 4),
         "test_accuracy": round(test_acc, 4),
@@ -193,7 +212,7 @@ def train_model(train, val, test, feature_cols, target_col, model_name):
     with open(metrics_path, "w", encoding="utf-8") as f:
         json.dump(metrics, f, ensure_ascii=False, indent=2)
 
-    return model, metrics
+    return model, metrics, best_thr
 
 
 def main():
@@ -207,30 +226,49 @@ def main():
     print(f"総サンプル数: {total_samples:,}")
     print(f"特徴量数: {len(feature_cols)}")
 
+    # クラス不均衡比 (neg/pos = 5:1)
+    pos_ratio = train["target_win"].mean()
+    spw = round((1 - pos_ratio) / pos_ratio, 2)
+    print(f"\nクラス比 (neg/pos): {spw:.2f}")
+
     # 1. 1着予測モデル
-    model_win, metrics_win = train_model(
+    model_win, metrics_win, thr_win = train_model(
         train, val, test, feature_cols,
         target_col="target_win",
-        model_name="lgbm_win"
+        model_name="lgbm_win",
+        scale_pos_weight=spw,
     )
 
-    # 2. 2着予測モデル (2連単用)
-    model_2nd, metrics_2nd = train_model(
+    # 2. 2着予測モデル (2連単用) — scale_pos_weight で少数クラスを重視
+    model_2nd, metrics_2nd, thr_2nd = train_model(
         train, val, test, feature_cols,
         target_col="target_2nd",
-        model_name="lgbm_2nd"
+        model_name="lgbm_2nd",
+        scale_pos_weight=spw,
     )
 
     # 3. 3着以内予測モデル
-    model_top3, metrics_top3 = train_model(
+    model_top3, metrics_top3, thr_top3 = train_model(
         train, val, test, feature_cols,
         target_col="target_top3",
-        model_name="lgbm_top3"
+        model_name="lgbm_top3",
     )
+
+    # 最適閾値を保存
+    thresholds = {
+        "lgbm_win": thr_win,
+        "lgbm_2nd": thr_2nd,
+        "lgbm_top3": thr_top3,
+    }
+    thr_path = os.path.join(CKPT_DIR, "thresholds.json")
+    with open(thr_path, "w") as f:
+        json.dump(thresholds, f, indent=2)
+    print(f"\n最適閾値保存: {thr_path}")
+    print(json.dumps(thresholds, indent=2))
 
     # 2連単的中率評価 (テストデータ)
     print("\n" + "=" * 60)
-    print("2連単 的中率評価 (Test)")
+    print(f"2連単 的中率評価 (Test)  thr_win={thr_win:.3f}, thr_2nd={thr_2nd:.3f}")
     print("=" * 60)
     X_test = test[feature_cols].values
     test_eval = test[["date", "jyo_cd", "race_no", "course", "rank"]].copy()
@@ -262,11 +300,11 @@ def main():
     print("\n" + "=" * 60)
     print("学習完了サマリー")
     print("=" * 60)
-    print(f"{'モデル':<20} {'Val AUC':<12} {'Test AUC':<12} {'Test Acc':<12}")
-    print(f"{'─' * 56}")
-    print(f"{'1着予測':<20} {metrics_win['val_auc']:<12.4f} {metrics_win['test_auc']:<12.4f} {metrics_win['test_accuracy']:<12.4f}")
-    print(f"{'2着予測':<20} {metrics_2nd['val_auc']:<12.4f} {metrics_2nd['test_auc']:<12.4f} {metrics_2nd['test_accuracy']:<12.4f}")
-    print(f"{'3着以内':<20} {metrics_top3['val_auc']:<12.4f} {metrics_top3['test_auc']:<12.4f} {metrics_top3['test_accuracy']:<12.4f}")
+    print(f"{'モデル':<20} {'Val AUC':<12} {'Test AUC':<12} {'Test F1':<12} {'閾値':<8}")
+    print(f"{'─' * 64}")
+    print(f"{'1着予測':<20} {metrics_win['val_auc']:<12.4f} {metrics_win['test_auc']:<12.4f} {metrics_win['test_f1']:<12.4f} {thr_win:<8.3f}")
+    print(f"{'2着予測':<20} {metrics_2nd['val_auc']:<12.4f} {metrics_2nd['test_auc']:<12.4f} {metrics_2nd['test_f1']:<12.4f} {thr_2nd:<8.3f}")
+    print(f"{'3着以内':<20} {metrics_top3['val_auc']:<12.4f} {metrics_top3['test_auc']:<12.4f} {metrics_top3['test_f1']:<12.4f} {thr_top3:<8.3f}")
 
     print(f"\nチェックポイント: {CKPT_DIR}")
     print("学習完了!")
