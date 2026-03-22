@@ -48,7 +48,17 @@ def load_models():
     if calibrators:
         print(f"キャリブレーター読み込み: {list(calibrators.keys())}")
 
-    return model_win, model_2nd, feature_cols, thresholds, calibrators
+    # 遷移行列 (存在する場合のみ読み込む)
+    tm_path = os.path.join(CKPT_DIR, "transition_matrix.json")
+    if os.path.exists(tm_path):
+        with open(tm_path) as f:
+            trans_matrix = json.load(f)
+        print(f"遷移行列読み込み: {len(trans_matrix)}セル")
+    else:
+        trans_matrix = {}
+        print("警告: transition_matrix.json が見つかりません。独立近似を使用します。")
+
+    return model_win, model_2nd, feature_cols, thresholds, calibrators, trans_matrix
 
 
 def _apply_calibrator(raw_proba, calibrators, key_platt, key_iso):
@@ -69,12 +79,14 @@ def _apply_calibrator(raw_proba, calibrators, key_platt, key_iso):
 
 
 def predict_exacta(test_df, model_win, model_2nd, feature_cols,
-                   thresholds=None, calibrators=None):
+                   thresholds=None, calibrators=None, trans_matrix=None):
     """テストデータ全レースの2連単予測を返す DataFrame。"""
     if thresholds is None:
         thresholds = {"lgbm_win": 0.5, "lgbm_2nd": 0.5}
     if calibrators is None:
         calibrators = {}
+    if trans_matrix is None:
+        trans_matrix = {}
     thr_win = thresholds.get("lgbm_win", 0.5)
     thr_2nd = thresholds.get("lgbm_2nd", 0.5)
 
@@ -125,7 +137,7 @@ def predict_exacta(test_df, model_win, model_2nd, feature_cols,
             "pred_2nd":  int(c2),
             "prob_win":  p1,
             "prob_2nd":  p2,
-            "prob_exacta": p1 * p2,   # 2連単確率の近似
+            "prob_exacta": p1 * trans_matrix.get(f"{int(c1)}-{int(c2)}", 0.2),
             "true_1st":  int(true_1st),
             "true_2nd":  int(true_2nd),
             "hit":       hit,
@@ -259,7 +271,7 @@ def main():
     print("2連単 期待値バックテスト")
     print("=" * 70)
 
-    model_win, model_2nd, feature_cols, thresholds, calibrators = load_models()
+    model_win, model_2nd, feature_cols, thresholds, calibrators, trans_matrix = load_models()
 
     print("テストデータ読み込み中...")
     test = pd.read_csv(os.path.join(DATA_DIR, "test.csv"))
@@ -267,7 +279,7 @@ def main():
 
     print("2連単予測中...")
     pred_df = predict_exacta(test, model_win, model_2nd, feature_cols,
-                             thresholds, calibrators)
+                             thresholds, calibrators, trans_matrix)
 
     print("払戻データをマージ中...")
     pred_df = attach_payouts(pred_df)
