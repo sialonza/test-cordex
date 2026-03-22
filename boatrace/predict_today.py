@@ -177,6 +177,14 @@ def main():
     model_win = lgb.Booster(model_file=win_model_path)
     model_2nd = lgb.Booster(model_file=snd_model_path)
 
+    # 遷移行列ロード
+    tm_path = os.path.join(CKPT_DIR, "transition_matrix.json")
+    if os.path.exists(tm_path):
+        with open(tm_path) as f:
+            trans_matrix = json.load(f)
+    else:
+        trans_matrix = {}
+
     # 特徴量リスト
     with open(os.path.join(DATA_DIR, "feature_cols.txt")) as f:
         feature_cols = [line.strip() for line in f if line.strip()]
@@ -208,7 +216,9 @@ def main():
         pred_2nd_idx = rest["prob_2nd"].idxmax()
         pred_2nd = rest.loc[pred_2nd_idx]
 
-        prob_exacta = pred_1st["prob_win"] * pred_2nd["prob_2nd"]
+        c1_key = f"{int(pred_1st['course'])}-{int(pred_2nd['course'])}"
+        cond_p2 = trans_matrix.get(c1_key, pred_2nd["prob_2nd"])
+        prob_exacta = pred_1st["prob_win"] * cond_p2
         be_odds = breakeven_odds(prob_exacta)
 
         exacta_rows.append({
