@@ -38,3 +38,7 @@ st_vs_avg
 tenji_vs_avg
 motor_rank
 avg_st_rank
+mkt_avg_payout_90d
+mkt_win_prob_90d
+mkt_avg_payout_180d
+mkt_win_prob_180d
