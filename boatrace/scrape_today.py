@@ -520,7 +520,14 @@ def load_models() -> tuple:
                 calibrators[f"{mname}_{method}"] = joblib.load(p)
                 break  # isotonic 優先で1つだけ読む
 
-    return model_win, model_2nd, feature_cols, thresholds, calibrators
+    # 遷移行列ロード
+    tm_path = os.path.join(CKPT_DIR, "transition_matrix.json")
+    trans_matrix = {}
+    if os.path.exists(tm_path):
+        with open(tm_path) as f:
+            trans_matrix = json.load(f)
+
+    return model_win, model_2nd, feature_cols, thresholds, calibrators, trans_matrix
 
 
 def _apply_cal(raw: np.ndarray, calibrators: dict, key: str) -> np.ndarray:
@@ -534,8 +541,11 @@ def _apply_cal(raw: np.ndarray, calibrators: dict, key: str) -> np.ndarray:
 
 def predict_races(df: pd.DataFrame, model_win, model_2nd,
                   feature_cols: list, thresholds: dict,
-                  calibrators: dict) -> pd.DataFrame:
+                  calibrators: dict, trans_matrix: dict = None) -> pd.DataFrame:
     """全レースの2連単予測を返す。"""
+    if trans_matrix is None:
+        trans_matrix = {}
+
     missing = [c for c in feature_cols if c not in df.columns]
     if missing:
         print(f"  警告: 特徴量不足 {len(missing)}個 → 0で補完: {missing[:5]}...")
@@ -563,7 +573,8 @@ def predict_races(df: pd.DataFrame, model_win, model_2nd,
         pred_2nd = rest.loc[idx2, "course"]
         p2 = rest.loc[idx2, "prob_2nd"]
 
-        prob_exacta = p1 * p2
+        cond_p2 = trans_matrix.get(f"{int(pred_1st)}-{int(pred_2nd)}", p2)
+        prob_exacta = p1 * cond_p2
         breakeven = round(100 / max(prob_exacta, 1e-6) / 100) * 100
 
         rows.append({
@@ -659,7 +670,7 @@ def main():
 
     # ── モデルロード ──────────────────────────────────────────────────────────
     print("モデルロード中...")
-    model_win, model_2nd, feature_cols, thresholds, calibrators = load_models()
+    model_win, model_2nd, feature_cols, thresholds, calibrators, trans_matrix = load_models()
     if calibrators:
         print(f"  キャリブレーター: {list(calibrators.keys())}")
 
@@ -717,7 +728,7 @@ def main():
 
     print("予測中...")
     pred_df = predict_races(df, model_win, model_2nd,
-                            feature_cols, thresholds, calibrators)
+                            feature_cols, thresholds, calibrators, trans_matrix=trans_matrix)
 
     print_predictions(pred_df)
 
