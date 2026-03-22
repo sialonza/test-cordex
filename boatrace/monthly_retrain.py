@@ -364,6 +364,12 @@ def main():
             logger.error("  download_extra.py 失敗。再学習を中止します。")
             sys.exit(1)
 
+        # ─ Step 2.5: 市場払戻統計の更新 ───────────────────────────────────
+        logger.info("\n[Step 2.5] generate_payout_stats.py — 払戻統計更新")
+        if not run([sys.executable, str(SCRIPT_DIR / "generate_payout_stats.py")],
+                   dry_run=args.dry_run, logger=logger):
+            logger.warning("  generate_payout_stats.py 失敗。前回の統計で続行します。")
+
         # ─ Step 3: 特徴量エンジニアリング ────────────────────────────────
         logger.info("\n[Step 3] convert_boatracecsv.py — 特徴量生成")
         if not run([sys.executable, str(SCRIPT_DIR / "convert_boatracecsv.py")],
