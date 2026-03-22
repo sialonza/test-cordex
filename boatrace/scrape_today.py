@@ -22,6 +22,8 @@ import time
 import json
 import warnings
 import argparse
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 import pandas as pd
 import lightgbm as lgb
@@ -41,6 +43,37 @@ CKPT_DIR  = os.path.join(BASE_DIR, "checkpoints", "real55k")
 BOATRACE_BASE = "https://www.boatrace.jp/owpc/pc/race"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
+# ── レートリミッター ──────────────────────────────────────────────────────────
+
+class _RateLimiter:
+    """
+    トークンバケット方式のレートリミッター。
+    rps: 1秒あたりの最大リクエスト数。
+    """
+    def __init__(self, rps: float = 4.0):
+        self._interval = 1.0 / rps
+        self._lock = threading.Lock()
+        self._last = 0.0
+
+    def acquire(self) -> None:
+        with self._lock:
+            now = time.monotonic()
+            wait = self._interval - (now - self._last)
+            if wait > 0:
+                time.sleep(wait)
+            self._last = time.monotonic()
+
+
+_rate_limiter = _RateLimiter(rps=4.0)   # 最大 4 req/s
+
+# スレッドセーフな print
+_print_lock = threading.Lock()
+
+
+def _tprint(*args, **kwargs) -> None:
+    with _print_lock:
+        print(*args, **kwargs)
+
 # 場コード → 場名
 VENUE_NAMES = {
     "01": "桐生", "02": "戸田",  "03": "江戸川", "04": "平和島",
@@ -57,13 +90,14 @@ KANJI_NUM = {"１": 1, "２": 2, "３": 3, "４": 4, "５": 5, "６": 6}
 
 def _get(url: str, max_retries: int = 3, wait: float = 2.0) -> requests.Response | None:
     for attempt in range(max_retries):
+        _rate_limiter.acquire()
         try:
             r = requests.get(url, headers=HEADERS, timeout=15)
             if r.status_code == 200:
                 return r
-            print(f"  HTTP {r.status_code}: {url}", file=sys.stderr)
+            _tprint(f"  HTTP {r.status_code}: {url}", file=sys.stderr)
         except requests.RequestException as e:
-            print(f"  Network error (attempt {attempt+1}): {e}", file=sys.stderr)
+            _tprint(f"  Network error (attempt {attempt+1}): {e}", file=sys.stderr)
         if attempt < max_retries - 1:
             time.sleep(wait * (attempt + 1))
     return None
@@ -325,6 +359,45 @@ def fetch_beforeinfo(jyo_cd: str, race_no: int, date_str: str,
     return exhibit, weather
 
 
+# ── 1レース分の並列スクレイプ ─────────────────────────────────────────────────
+
+def fetch_one_race(jyo_cd: str, jyo_name: str,
+                   race_no: int, date_str: str) -> list[dict] | None:
+    """
+    1レース分の出走表 + 直前情報を取得してマージした行リストを返す。
+    スレッドセーフ。取得失敗時は None を返す。
+    """
+    racers = fetch_racelist(jyo_cd, race_no, date_str)
+    if not racers:
+        return None
+
+    racer_map = {r["course"]: r for r in racers}
+    exhibit, weather = fetch_beforeinfo(jyo_cd, race_no, date_str, racer_map)
+
+    rows = []
+    for racer in racers:
+        c = racer["course"]
+        if c in exhibit:
+            ex = exhibit[c]
+            if ex.get("tenji_time"):
+                racer["tenji_time"] = ex["tenji_time"]
+            if ex.get("st"):
+                racer["st"] = ex["st"]
+        if racer.get("st") is None:
+            racer["st"] = racer.get("avg_st")
+
+        racer.update({
+            "date":     date_str,
+            "jyo_cd":   jyo_cd,
+            "jyo_name": jyo_name,
+            "race_no":  race_no,
+            **weather,
+        })
+        rows.append(racer)
+
+    return rows
+
+
 # ── 特徴量エンジニアリング ────────────────────────────────────────────────────
 
 def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -541,8 +614,10 @@ def main():
                         help="場コード (例: 06 = 浜名湖)。省略時は全場")
     parser.add_argument("--races", default=None,
                         help="レース番号 (例: 1-6 または 1,3,5)。省略時は全レース")
-    parser.add_argument("--out",   default=None,
+    parser.add_argument("--out",     default=None,
                         help="予測結果 CSV の保存先")
+    parser.add_argument("--workers", type=int, default=6,
+                        help="並列スクレイプ数 (default: 6)")
     args = parser.parse_args()
 
     print("=" * 60)
@@ -576,57 +651,48 @@ def main():
     if calibrators:
         print(f"  キャリブレーター: {list(calibrators.keys())}")
 
-    # ── スクレイプ ────────────────────────────────────────────────────────────
-    all_rows = []
-
+    # ── スクレイプ (並列) ─────────────────────────────────────────────────────
+    # レースカウントは軽量なので先に逐次取得
+    jobs: list[tuple[str, str, int]] = []
     for venue in venues:
         jyo_cd   = venue["jyo_cd"]
         jyo_name = venue["jyo_name"]
         n_races  = fetch_race_count(jyo_cd, args.date)
-        print(f"\n{jyo_name}({jyo_cd}) {n_races}レース")
-
+        print(f"  {jyo_name}({jyo_cd}) {n_races}レース")
         for race_no in range(1, n_races + 1):
             if race_filter and race_no not in race_filter:
                 continue
+            jobs.append((jyo_cd, jyo_name, race_no))
 
-            print(f"  {race_no}R スクレイプ中...", end=" ", flush=True)
+    print(f"\n{len(jobs)}レース を {args.workers} workers で並列取得中...")
 
-            # 出走表
-            racers = fetch_racelist(jyo_cd, race_no, args.date)
-            if not racers:
-                print("データなし")
+    all_rows: list[dict] = []
+    done = 0
+
+    with ThreadPoolExecutor(max_workers=args.workers) as executor:
+        future_to_job = {
+            executor.submit(fetch_one_race, jyo_cd, jyo_name, race_no, args.date):
+                (jyo_cd, jyo_name, race_no)
+            for jyo_cd, jyo_name, race_no in jobs
+        }
+        for future in as_completed(future_to_job):
+            jyo_cd, jyo_name, race_no = future_to_job[future]
+            done += 1
+            try:
+                rows = future.result()
+            except Exception as e:
+                _tprint(f"  [{done}/{len(jobs)}] {jyo_name} {race_no}R ERROR: {e}",
+                        file=sys.stderr)
                 continue
 
-            racer_map = {r["course"]: r for r in racers}
+            if rows is None:
+                _tprint(f"  [{done}/{len(jobs)}] {jyo_name} {race_no}R データなし")
+                continue
 
-            # 直前情報 (展示タイム・天候)
-            exhibit, weather = fetch_beforeinfo(jyo_cd, race_no, args.date, racer_map)
-
-            # マージ
-            for racer in racers:
-                c = racer["course"]
-                if c in exhibit:
-                    ex = exhibit[c]
-                    if ex.get("tenji_time"):
-                        racer["tenji_time"] = ex["tenji_time"]
-                    if ex.get("st"):
-                        racer["st"] = ex["st"]
-                # st が取れない場合は avg_st を代替使用
-                if racer.get("st") is None:
-                    racer["st"] = racer.get("avg_st")
-
-                racer.update({
-                    "date":       args.date,
-                    "jyo_cd":     jyo_cd,
-                    "jyo_name":   jyo_name,
-                    "race_no":    race_no,
-                    **{k: v for k, v in weather.items()},
-                })
-                all_rows.append(racer)
-
-            tenji_ok = sum(1 for r in racers if r.get("tenji_time") is not None)
-            print(f"OK ({tenji_ok}/6 展示タイム取得)")
-            time.sleep(0.5)  # サーバー負荷軽減
+            tenji_ok = sum(1 for r in rows if r.get("tenji_time") is not None)
+            _tprint(f"  [{done}/{len(jobs)}] {jyo_name} {race_no}R OK "
+                    f"({tenji_ok}/6 展示タイム)")
+            all_rows.extend(rows)
 
     if not all_rows:
         print("\nデータが取得できませんでした。")
