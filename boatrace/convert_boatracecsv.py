@@ -18,6 +18,87 @@ PROC_DIR = os.path.join(DATA_DIR, "processed")
 os.makedirs(PROC_DIR, exist_ok=True)
 
 
+def add_payout_market_features(df, payouts, windows=(90, 180)):
+    """
+    過去N日の会場×コース別 平均2連単払戻 から市場確率を推定する。
+
+    payouts.rank1_course が「このコースが1着になった時の2連単払戻」を示す。
+    レースごとに過去N日分の平均払戻を計算し、市場暗示確率 = 100/avg_payout を追加する。
+
+    データリーク防止: rolling(closed='left') で当日以前のデータのみ使用。
+    """
+    print("  市場払戻特徴量を計算中...")
+
+    payouts = payouts.copy()
+    payouts["date"]   = pd.to_datetime(payouts["date"])
+    payouts["jyo_cd"] = payouts["jyo_cd"].astype(str).str.zfill(2)
+    payouts = payouts.rename(columns={"rank1_course": "course"})
+
+    df = df.copy()
+    df["date"]   = pd.to_datetime(df["date"])
+    df["jyo_cd"] = df["jyo_cd"].astype(str).str.zfill(2)
+
+    feat_cols = []
+    for w in windows:
+        feat_cols += [f"mkt_avg_payout_{w}d", f"mkt_win_prob_{w}d"]
+
+    # ── Step 1: (jyo_cd, course) ごとに rolling 移動平均を計算 ──────────────
+    stat_parts = []
+    for (jyo, course), grp in payouts.groupby(["jyo_cd", "course"]):
+        grp = grp.sort_values("date").set_index("date")
+        row = pd.DataFrame(index=grp.index)
+        row["jyo_cd"] = jyo
+        row["course"] = int(course)
+        for w in windows:
+            # closed='left': [date-w, date) → 当日のレースを除外
+            row[f"mkt_avg_payout_{w}d"] = (
+                grp["payout_2nd"]
+                .rolling(f"{w}D", min_periods=3, closed="left")
+                .mean()
+            )
+        stat_parts.append(row.reset_index())
+
+    stats_df = (pd.concat(stat_parts, ignore_index=True)
+                  .sort_values(["jyo_cd", "course", "date"])
+                  .reset_index(drop=True))
+
+    # ── Step 2: merge_asof で race_results に結合 ────────────────────────────
+    # 同一グループ (jyo_cd, course) ごとに "当日以前の最新 stat" を結合
+    df = df.sort_values(["jyo_cd", "course", "date"]).reset_index(drop=True)
+
+    merged_parts = []
+    for (jyo, course), df_grp in df.groupby(["jyo_cd", "course"]):
+        stat_grp = stats_df[
+            (stats_df["jyo_cd"] == jyo) & (stats_df["course"] == int(course))
+        ][["date"] + [f"mkt_avg_payout_{w}d" for w in windows]].sort_values("date")
+
+        if len(stat_grp) == 0:
+            merged_parts.append(df_grp)
+            continue
+
+        merged = pd.merge_asof(
+            df_grp.sort_values("date"),
+            stat_grp,
+            on="date",
+            direction="backward",   # 当日以前の最新値を使用
+        )
+        merged_parts.append(merged)
+
+    result = (pd.concat(merged_parts, ignore_index=True)
+                .sort_values(["date", "jyo_cd", "race_no", "course"])
+                .reset_index(drop=True))
+
+    # ── Step 3: 市場暗示確率を計算 ───────────────────────────────────────────
+    for w in windows:
+        payout_col = f"mkt_avg_payout_{w}d"
+        prob_col   = f"mkt_win_prob_{w}d"
+        # 払戻最低 200 円でクリップして除算 (NaN はそのまま)
+        result[prob_col] = 100.0 / result[payout_col].clip(lower=200)
+
+    print(f"    追加特徴量: {feat_cols}")
+    return result
+
+
 def load_and_merge():
     """メインデータと追加データを統合"""
     print("データ読み込み中...")
@@ -45,6 +126,14 @@ def load_and_merge():
         df = df.merge(jyo_stats[["jyo_cd", "course", "jyo_course_win_pct", "jyo_course_avg_rank"]],
                        on=["jyo_cd", "course"], how="left")
         print(f"  場別コース成績をマージ")
+
+    # 市場払戻特徴量 (過去90d/180d の会場×コース別平均払戻)
+    payout_path = os.path.join(RAW_DIR, "race_payouts.csv")
+    if os.path.exists(payout_path):
+        payouts = pd.read_csv(payout_path)
+        df = add_payout_market_features(df, payouts, windows=(90, 180))
+    else:
+        print("  警告: race_payouts.csv が見つかりません。市場特徴量をスキップします。")
 
     return df
 
@@ -175,6 +264,9 @@ def main():
         "win_rate_rank", "st_rank", "tenji_rank", "nirenritsu_rank",
         "win_rate_vs_avg", "st_vs_avg", "tenji_vs_avg",
         "motor_rank", "avg_st_rank",
+        # 市場確率特徴量 (過去N日の会場×コース別平均払戻から推定)
+        "mkt_avg_payout_90d", "mkt_win_prob_90d",
+        "mkt_avg_payout_180d", "mkt_win_prob_180d",
     ]
 
     with open(os.path.join(PROC_DIR, "feature_cols.txt"), "w") as f:
