@@ -36,6 +36,8 @@ from datetime import datetime, timedelta
 from calendar import monthrange
 from pathlib import Path
 
+import notify as _notify
+
 # ── パス ─────────────────────────────────────────────────────────────────────
 SCRIPT_DIR = Path(__file__).parent
 LOG_DIR    = SCRIPT_DIR / "logs"
@@ -319,6 +321,8 @@ def main():
                         help="実際には実行せず手順を表示")
     parser.add_argument("--no-backup", action="store_true",
                         help="チェックポイントのバックアップをスキップ")
+    parser.add_argument("--no-notify", action="store_true",
+                        help="外部通知 (Slack/LINE/Discord) をスキップ")
     args = parser.parse_args()
 
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -440,13 +444,39 @@ def main():
             logger.info(f"バックアップ:     {backup_dir}")
         logger.info("=" * 64)
 
+        # ─ 外部通知 ──────────────────────────────────────────────────────
+        if not args.no_notify and not args.dry_run:
+            status = "warning" if alerts else "success"
+            logger.info("\n[通知] 外部チャンネルに送信中...")
+            _notify.send(
+                status=status,
+                run_id=run_id,
+                period=f"{start} ~ {end}",
+                metrics=curr_metrics,
+                alerts=alerts,
+            )
+
     except KeyboardInterrupt:
         logger.warning("\n中断されました。バックアップから復元します。")
         restore_checkpoint(backup_dir, logger)
+        if not args.no_notify:
+            _notify.send(
+                status="error",
+                run_id=run_id,
+                period=f"{start} ~ {end}",
+                error_msg="KeyboardInterrupt — 手動中断",
+            )
         sys.exit(130)
     except Exception as e:
         logger.error(f"\n予期しないエラー: {e}")
         restore_checkpoint(backup_dir, logger)
+        if not args.no_notify:
+            _notify.send(
+                status="error",
+                run_id=run_id,
+                period=f"{start} ~ {end}",
+                error_msg=str(e),
+            )
         raise
 
 

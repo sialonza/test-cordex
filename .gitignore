@@ -1,4 +1,5 @@
 __pycache__/
+boatrace/notify_config.json
 *.pyc
 *.pyo
 boatrace/checkpoints/
