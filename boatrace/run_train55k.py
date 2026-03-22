@@ -215,6 +215,41 @@ def train_model(train, val, test, feature_cols, target_col, model_name,
     return model, metrics, best_thr
 
 
+def compute_transition_matrix(df: pd.DataFrame, min_samples: int = 20) -> dict:
+    """
+    trainデータから P(2着=c2 | 1着=c1) の遷移行列を計算する。
+
+    Args:
+        df: 'rank', 'course', 'date', 'jyo_cd', 'race_no' を含む DataFrame
+        min_samples: この数未満のセルはフォールバック値 0.2 を使用
+
+    Returns:
+        {"c1-c2": float, ...} 形式の辞書 (例: {"1-2": 0.312, ...})
+    """
+    first_counts: dict = {}
+    pair_counts: dict = {}
+
+    for _, g in df.groupby(["date", "jyo_cd", "race_no"]):
+        first_rows = g[g["rank"] == 1]["course"].values
+        second_rows = g[g["rank"] == 2]["course"].values
+        if len(first_rows) == 0 or len(second_rows) == 0:
+            continue
+        c1 = str(int(first_rows[0]))
+        c2 = str(int(second_rows[0]))
+        first_counts[c1] = first_counts.get(c1, 0) + 1
+        pair_counts[(c1, c2)] = pair_counts.get((c1, c2), 0) + 1
+
+    matrix: dict = {}
+    for (c1, c2), cnt in pair_counts.items():
+        total = first_counts.get(c1, 0)
+        key = f"{c1}-{c2}"
+        if total >= min_samples:
+            matrix[key] = cnt / total
+        else:
+            matrix[key] = 0.2  # フォールバック: 1/5
+    return matrix
+
+
 def main():
     print("=" * 60)
     print("ボートレース予測モデル 学習 (LightGBM)")
@@ -305,6 +340,19 @@ def main():
     print(f"{'1着予測':<20} {metrics_win['val_auc']:<12.4f} {metrics_win['test_auc']:<12.4f} {metrics_win['test_f1']:<12.4f} {thr_win:<8.3f}")
     print(f"{'2着予測':<20} {metrics_2nd['val_auc']:<12.4f} {metrics_2nd['test_auc']:<12.4f} {metrics_2nd['test_f1']:<12.4f} {thr_2nd:<8.3f}")
     print(f"{'3着以内':<20} {metrics_top3['val_auc']:<12.4f} {metrics_top3['test_auc']:<12.4f} {metrics_top3['test_f1']:<12.4f} {thr_top3:<8.3f}")
+
+    # 遷移行列 (条件付き2連単確率) の計算・保存
+    print("\n遷移行列を計算中 (P(2着=c2 | 1着=c1))...")
+    all_train = pd.concat([train, val], ignore_index=True)
+    trans_matrix = compute_transition_matrix(all_train)
+    tm_path = os.path.join(CKPT_DIR, "transition_matrix.json")
+    with open(tm_path, "w") as f:
+        json.dump(trans_matrix, f, indent=2)
+    print(f"遷移行列保存: {tm_path}  ({len(trans_matrix)}セル)")
+    # 主要コンビを表示
+    for key in ["1-2", "1-3", "2-1", "3-1", "4-1"]:
+        print(f"  P(2着={key.split('-')[1]} | 1着={key.split('-')[0]}): "
+              f"{trans_matrix.get(key, 0.2):.3f}")
 
     print(f"\nチェックポイント: {CKPT_DIR}")
     print("学習完了!")
