@@ -14,6 +14,7 @@ import json
 import numpy as np
 import pandas as pd
 import lightgbm as lgb
+import joblib
 
 BASE_DIR   = os.path.dirname(__file__)
 DATA_DIR   = os.path.join(BASE_DIR, "data", "processed")
@@ -37,13 +38,43 @@ def load_models():
     else:
         thresholds = {"lgbm_win": 0.5, "lgbm_2nd": 0.5}
 
-    return model_win, model_2nd, feature_cols, thresholds
+    # キャリブレーター (存在する場合のみ読み込む)
+    calibrators = {}
+    for mname in ("lgbm_win", "lgbm_2nd"):
+        for method in ("platt", "isotonic"):
+            path = os.path.join(CKPT_DIR, f"{mname}_{method}.pkl")
+            if os.path.exists(path):
+                calibrators[f"{mname}_{method}"] = joblib.load(path)
+    if calibrators:
+        print(f"キャリブレーター読み込み: {list(calibrators.keys())}")
+
+    return model_win, model_2nd, feature_cols, thresholds, calibrators
 
 
-def predict_exacta(test_df, model_win, model_2nd, feature_cols, thresholds=None):
+def _apply_calibrator(raw_proba, calibrators, key_platt, key_iso):
+    """
+    isotonic 優先でキャリブレーターを適用する。
+    なければ raw をそのまま返す。
+    LogisticRegression は predict_proba(reshape)、
+    IsotonicRegression は predict() を使う。
+    """
+    for key in (key_iso, key_platt):
+        if key not in calibrators:
+            continue
+        cal = calibrators[key]
+        if hasattr(cal, "predict_proba"):                        # LogisticRegression
+            return cal.predict_proba(raw_proba.reshape(-1, 1))[:, 1]
+        return np.clip(cal.predict(raw_proba), 1e-7, 1 - 1e-7)  # IsotonicRegression
+    return raw_proba
+
+
+def predict_exacta(test_df, model_win, model_2nd, feature_cols,
+                   thresholds=None, calibrators=None):
     """テストデータ全レースの2連単予測を返す DataFrame。"""
     if thresholds is None:
         thresholds = {"lgbm_win": 0.5, "lgbm_2nd": 0.5}
+    if calibrators is None:
+        calibrators = {}
     thr_win = thresholds.get("lgbm_win", 0.5)
     thr_2nd = thresholds.get("lgbm_2nd", 0.5)
 
@@ -51,8 +82,14 @@ def predict_exacta(test_df, model_win, model_2nd, feature_cols, thresholds=None)
     X = test_df[available].values
 
     test_df = test_df.copy()
-    test_df["prob_win"] = model_win.predict(X, num_iteration=model_win.best_iteration)
-    test_df["prob_2nd"] = model_2nd.predict(X, num_iteration=model_2nd.best_iteration)
+    raw_win = model_win.predict(X, num_iteration=model_win.best_iteration)
+    raw_2nd = model_2nd.predict(X, num_iteration=model_2nd.best_iteration)
+
+    # キャリブレーション適用 (isotonic 優先、なければ platt、なければ raw)
+    test_df["prob_win"] = _apply_calibrator(raw_win, calibrators,
+                                             "lgbm_win_platt", "lgbm_win_isotonic")
+    test_df["prob_2nd"] = _apply_calibrator(raw_2nd, calibrators,
+                                             "lgbm_2nd_platt", "lgbm_2nd_isotonic")
 
     rows = []
     for (date, jyo_cd, race_no), g in test_df.groupby(["date", "jyo_cd", "race_no"]):
@@ -222,14 +259,15 @@ def main():
     print("2連単 期待値バックテスト")
     print("=" * 70)
 
-    model_win, model_2nd, feature_cols, thresholds = load_models()
+    model_win, model_2nd, feature_cols, thresholds, calibrators = load_models()
 
     print("テストデータ読み込み中...")
     test = pd.read_csv(os.path.join(DATA_DIR, "test.csv"))
     print(f"テストサンプル: {len(test):,}  ({test['date'].min()} ~ {test['date'].max()})")
 
     print("2連単予測中...")
-    pred_df = predict_exacta(test, model_win, model_2nd, feature_cols, thresholds)
+    pred_df = predict_exacta(test, model_win, model_2nd, feature_cols,
+                             thresholds, calibrators)
 
     print("払戻データをマージ中...")
     pred_df = attach_payouts(pred_df)
