@@ -107,6 +107,70 @@ def main():
     weather_stats.to_csv(weather_path, index=False, encoding="utf-8-sig")
     print(f"  保存先: {weather_path}")
 
+    # 5. 直近フォーム統計 (予測時マージ用スナップショット)
+    print("直近フォーム統計を集計中...")
+    df2 = df.copy()
+    df2["date"] = pd.to_datetime(df2["date"])
+    df2 = df2.sort_values(["racer_id", "date"]).reset_index(drop=True)
+    df2["win"]  = (df2["rank"] == 1).astype(float)
+    df2["top2"] = (df2["rank"] <= 2).astype(float)
+
+    form_records = []
+    for racer_id, gdf in df2.groupby("racer_id"):
+        wins  = gdf["win"].values
+        top2s = gdf["top2"].values
+        ranks = gdf["rank"].values
+        sts   = gdf["st"].values
+        row = {"racer_id": racer_id}
+        for n in (3, 5, 10):
+            sl = slice(max(0, len(gdf) - n), len(gdf))
+            row[f"form_win_{n}"]      = float(np.mean(wins[sl]))  if len(gdf) >= 1 else np.nan
+            row[f"form_top2_{n}"]     = float(np.mean(top2s[sl])) if len(gdf) >= 1 else np.nan
+            row[f"form_avg_rank_{n}"] = float(np.mean(ranks[sl])) if len(gdf) >= 1 else np.nan
+            row[f"form_avg_st_{n}"]   = float(np.nanmean(sts[sl])) if len(gdf) >= 1 else np.nan
+        sl30 = slice(max(0, len(gdf) - 30), len(gdf))
+        sl5  = slice(max(0, len(gdf) - 5),  len(gdf))
+        sl3  = slice(max(0, len(gdf) - 3),  len(gdf))
+        sl10 = slice(max(0, len(gdf) - 10), len(gdf))
+        row["form_trend_win"]  = float(np.mean(wins[sl5]))  - float(np.mean(wins[sl30]))
+        row["form_trend_rank"] = float(np.mean(ranks[sl3])) - float(np.mean(ranks[sl10]))
+        ws = 0
+        for w in reversed(wins.tolist()):
+            if w == 1: ws += 1
+            else: break
+        ls = 0
+        for w in reversed(wins.tolist()):
+            if w == 0: ls += 1
+            else: break
+        row["form_win_streak"]    = ws
+        row["form_no_win_streak"] = ls
+        form_records.append(row)
+
+    form_df = pd.DataFrame(form_records)
+    form_path = os.path.join(EXTRA_DIR, "racer_recent_form.csv")
+    form_df.to_csv(form_path, index=False, encoding="utf-8-sig")
+    print(f"  レーサー数: {len(form_df):,}")
+    print(f"  保存先: {form_path}")
+
+    # 6. 同場直近フォーム (racer_id × jyo_cd)
+    print("同場直近フォーム統計を集計中...")
+    venue_records = []
+    for (racer_id, jyo_cd), gdf in df2.groupby(["racer_id", "jyo_cd"]):
+        wins  = gdf["win"].values
+        top2s = gdf["top2"].values
+        sl5 = slice(max(0, len(gdf) - 5), len(gdf))
+        venue_records.append({
+            "racer_id":         racer_id,
+            "jyo_cd":           str(jyo_cd).zfill(2),
+            "form_venue_win_5":  float(np.mean(wins[sl5])),
+            "form_venue_top2_5": float(np.mean(top2s[sl5])),
+        })
+    venue_df = pd.DataFrame(venue_records)
+    venue_path = os.path.join(EXTRA_DIR, "racer_venue_form.csv")
+    venue_df.to_csv(venue_path, index=False, encoding="utf-8-sig")
+    print(f"  racer×場 組合せ: {len(venue_df):,}")
+    print(f"  保存先: {venue_path}")
+
     print("\n追加データ生成 完了!")
 
 

@@ -456,6 +456,18 @@ def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
         pay_stats["jyo_cd"] = pay_stats["jyo_cd"].astype(str).str.zfill(2)
         df = df.merge(pay_stats, on=["jyo_cd", "course"], how="left")
 
+    # 直近フォーム特徴量
+    form_path = os.path.join(EXTRA_DIR, "racer_recent_form.csv")
+    if os.path.exists(form_path):
+        form_df = pd.read_csv(form_path)
+        df = df.merge(form_df, on="racer_id", how="left")
+
+    venue_form_path = os.path.join(EXTRA_DIR, "racer_venue_form.csv")
+    if os.path.exists(venue_form_path):
+        venue_form = pd.read_csv(venue_form_path)
+        venue_form["jyo_cd"] = venue_form["jyo_cd"].astype(str).str.zfill(2)
+        df = df.merge(venue_form, on=["racer_id", "jyo_cd"], how="left")
+
     # レース内相対特徴量
     race_group = ["date", "jyo_cd", "race_no"]
     for col, asc, out in [

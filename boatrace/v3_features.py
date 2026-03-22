@@ -82,6 +82,105 @@ def _rolling_rate(df, groupby_cols, value_col, window_days, min_periods=5, date_
     return pd.concat(results).sort_index()
 
 
+def _rolling_n(df, groupby_cols, value_col, n, date_col='date', min_periods=1):
+    """
+    各行の直近n走 (当日を除く) の value_col の平均。
+    count-based window: shift(1).rolling(n)
+    """
+    df_work = df[groupby_cols + [date_col, value_col]].copy()
+    df_work['__orig_idx__'] = df.index
+    results = []
+    for _, gdf in df_work.groupby(groupby_cols, sort=False):
+        gdf = gdf.sort_values(date_col)
+        rolled = gdf[value_col].shift(1).rolling(n, min_periods=min_periods).mean()
+        results.append(pd.Series(rolled.values, index=gdf['__orig_idx__'].values))
+    return pd.concat(results).sort_index()
+
+
+def _compute_streaks(df, groupby_cols, win_col, date_col='date'):
+    """
+    直近連続勝利数 / 直近連続未勝利数 を行ごとに返す (当日を除く: shift済み)。
+    Returns: (form_win_streak, form_no_win_streak) の Series ペア
+    """
+    df_work = df[groupby_cols + [date_col, win_col]].copy()
+    df_work['__orig_idx__'] = df.index
+
+    win_streaks  = np.zeros(len(df), dtype=np.int16)
+    lose_streaks = np.zeros(len(df), dtype=np.int16)
+
+    for _, gdf in df_work.groupby(groupby_cols, sort=False):
+        gdf  = gdf.sort_values(date_col)
+        idxs = gdf['__orig_idx__'].values
+        wins = gdf[win_col].values.astype(int)
+        n    = len(wins)
+        ws   = np.zeros(n, dtype=np.int16)
+        ls   = np.zeros(n, dtype=np.int16)
+        # i 番の「直前まで」の連続数を構築
+        for i in range(1, n):
+            if wins[i - 1] == 1:
+                ws[i] = ws[i - 1] + 1
+                ls[i] = 0
+            else:
+                ws[i] = 0
+                ls[i] = ls[i - 1] + 1
+        win_streaks[idxs]  = ws
+        lose_streaks[idxs] = ls
+
+    return (pd.Series(win_streaks,  index=df.index),
+            pd.Series(lose_streaks, index=df.index))
+
+
+def add_recent_form_features(df, ns=(3, 5, 10)):
+    """
+    直近N走ベースのフォーム特徴量を追加する。
+
+    生成特徴量 (走数ベース・当日除外):
+      form_win_{n}          直近n走勝率
+      form_top2_{n}         直近n走2着以内率
+      form_avg_rank_{n}     直近n走平均着順
+      form_avg_st_{n}       直近n走平均ST
+      form_trend_win        win_5 - win_30  (短期上昇トレンド)
+      form_trend_rank       avg_rank_3 - avg_rank_10 (着順改善度: 負が改善)
+      form_win_streak       直近連続1着数
+      form_no_win_streak    直近連続未勝利数
+      form_venue_win_5      同場直近5走勝率
+      form_venue_top2_5     同場直近5走2着以内率
+    """
+    print("直近フォーム特徴量を計算中...")
+    df = df.copy()
+    df['win']    = (df['rank'] == 1).astype(float)
+    df['top2']   = (df['rank'] <= 2).astype(float)
+    st_col = 'st_val' if 'st_val' in df.columns else 'st'
+
+    # トレンド計算に必要な n を追加（未指定でも必ず生成）
+    required = sorted(set(ns) | {3, 5, 10})
+    for n in required:
+        label = f"直近{n}走" + ("" if n in ns else " (トレンド用)")
+        print(f"  {label}...")
+        df[f'form_win_{n}']      = _rolling_n(df, ['racer_id'], 'win',  n)
+        df[f'form_top2_{n}']     = _rolling_n(df, ['racer_id'], 'top2', n)
+        df[f'form_avg_rank_{n}'] = _rolling_n(df, ['racer_id'], 'rank', n)
+        df[f'form_avg_st_{n}']   = _rolling_n(df, ['racer_id'], st_col, n)
+
+    # 短期トレンド (直近5走 vs 直近30走)
+    win_30 = _rolling_n(df, ['racer_id'], 'win', 30)
+    df['form_trend_win']  = df['form_win_5']      - win_30
+    df['form_trend_rank'] = df['form_avg_rank_3'] - df['form_avg_rank_10']
+
+    # 連勝・連敗ストリーク
+    print("  連勝/連敗ストリーク...")
+    df['form_win_streak'], df['form_no_win_streak'] = _compute_streaks(
+        df, ['racer_id'], 'win'
+    )
+
+    # 同場直近成績
+    print("  同場直近5走...")
+    df['form_venue_win_5']  = _rolling_n(df, ['racer_id', 'jyo_cd'], 'win',  5)
+    df['form_venue_top2_5'] = _rolling_n(df, ['racer_id', 'jyo_cd'], 'top2', 5)
+
+    return df
+
+
 def add_racer_features(df, windows=(90, 180)):
     """選手ごとのローリング統計"""
     print("選手特徴量を計算中...")
@@ -198,6 +297,14 @@ def build_race_level_features(df):
         'motor_rel_60', 'motor_top2_60',
         'tenji_rel', 'st_rel',
         'venue_course_win180',
+        # 直近フォーム
+        'form_win_3',   'form_win_5',   'form_win_10',
+        'form_top2_3',  'form_top2_5',  'form_top2_10',
+        'form_avg_rank_3', 'form_avg_rank_5', 'form_avg_rank_10',
+        'form_avg_st_5', 'form_avg_st_10',
+        'form_trend_win', 'form_trend_rank',
+        'form_win_streak', 'form_no_win_streak',
+        'form_venue_win_5', 'form_venue_top2_5',
     ]
     available_feat = [c for c in feature_cols if c in df.columns]
 
@@ -237,6 +344,7 @@ def build_features(results_file=None, payouts_file=None, out_prefix='v3'):
     df = add_racer_features(df, windows=(90, 180))
     df = add_motor_features(df, window=60)
     df = add_venue_course_features(df, window=180)
+    df = add_recent_form_features(df, ns=(3, 5, 10))
     df = add_implied_probability(df)
 
     print("レース単位特徴量を構築中...")
