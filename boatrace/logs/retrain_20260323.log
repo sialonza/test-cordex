@@ -1,0 +1,528 @@
+2026-03-23 07:17:55,158 [INFO] ================================================================
+2026-03-23 07:17:55,158 [INFO] 月次再学習  run_id=20260323_071755
+2026-03-23 07:17:55,158 [INFO] 対象期間: 2026-02-01 ~ 2026-02-28
+2026-03-23 07:17:55,158 [INFO] ================================================================
+2026-03-23 07:17:55,159 [INFO] 
+[Step 1] データダウンロード & 追記
+2026-03-23 07:17:55,159 [INFO]   実績データ取得: 2026-02-01 ~ 2026-02-28
+2026-03-23 07:17:55,159 [INFO]   $ /usr/local/bin/python /home/user/test-cordex/boatrace/download_real.py --start 2026-02-01 --end 2026-02-28
+============================================================
+ボートレース実データ ダウンロード v2
+============================================================
+対象期間: 2026-02-01 ~ 2026-02-28
+日数: 28日 (推定所要時間: 0.1分)
+
+  [1/28] 2026-02-01 ... 992 行, 168 レース
+  [2/28] 2026-02-02 ... 778 行, 132 レース
+  [3/28] 2026-02-03 ... 773 行, 132 レース
+
+結果データ: 24,663 行 → /home/user/test-cordex/boatrace/data/raw/race_results_real.csv
+  期間: 2026-02-01 ~ 2026-02-28
+  会場数: 23
+払戻データ: 4,171 レース → /home/user/test-cordex/boatrace/data/raw/race_payouts_real.csv
+  2連単平均配当: 1,745円
+  2連単中央値:   720円
+
+完了!
+2026-03-23 07:22:52,505 [INFO]   新規レース結果: 24,663 行 (2026-02-01 ~ 2026-02-28)
+2026-03-23 07:22:57,064 [INFO]   race_results_big.csv: 399,384 → 416,582 行 (+17,198)
+2026-03-23 07:23:00,160 [INFO]   race_payouts.csv: 66,564 → 69,473 行 (+2,909)
+2026-03-23 07:23:00,320 [INFO] 
+[Step 2] download_extra.py — 統計再計算
+2026-03-23 07:23:00,320 [INFO]   $ /usr/local/bin/python /home/user/test-cordex/boatrace/download_extra.py
+============================================================
+追加データ生成 (レーサー成績・モーター成績・場別傾向)
+============================================================
+/home/user/test-cordex/boatrace/download_extra.py:31: DtypeWarning: Columns (0: race_time, 1: race_type) have mixed types. Specify dtype option on import or set low_memory=False.
+  df = pd.read_csv(big_path)
+メインデータ: 416,582 行
+レーサー別成績を集計中...
+  レーサー数: 3,399
+  保存先: /home/user/test-cordex/boatrace/data/extra/racer_stats.csv
+モーター別成績を集計中...
+  モーター数: 1,913
+  保存先: /home/user/test-cordex/boatrace/data/extra/motor_stats.csv
+場別・コース別成績を集計中...
+  場×コース組合せ: 144
+  保存先: /home/user/test-cordex/boatrace/data/extra/jyo_course_stats.csv
+天候別成績を集計中...
+  保存先: /home/user/test-cordex/boatrace/data/extra/weather_stats.csv
+直近フォーム統計を集計中...
+  レーサー数: 3,399
+  保存先: /home/user/test-cordex/boatrace/data/extra/racer_recent_form.csv
+同場直近フォーム統計を集計中...
+  racer×場 組合せ: 72,500
+  保存先: /home/user/test-cordex/boatrace/data/extra/racer_venue_form.csv
+
+追加データ生成 完了!
+2026-03-23 07:23:12,860 [INFO] 
+[Step 2.5] generate_payout_stats.py — 払戻統計更新
+2026-03-23 07:23:12,860 [INFO]   $ /usr/local/bin/python /home/user/test-cordex/boatrace/generate_payout_stats.py
+============================================================
+場別コース別 市場払戻統計 生成
+============================================================
+ウィンドウ: 90日 / 180日
+最低サンプル数: 5
+race_payouts.csv 読み込み中: /home/user/test-cordex/boatrace/data/raw/race_payouts.csv
+  データ期間: 2024-04-01 ~ 2026-03-18
+  総レース数: 69,473  会場数: 24
+
+生成結果:
+  (jyo_cd, course) ペア数: 144
+  90日窓 有効: 144/144  (100.0%)  NaN: 0
+  180日窓 有効: 144/144  (100.0%)  NaN: 0
+
+  コース別 平均払戻 (180日窓, 全会場平均):
+     コース      平均払戻      標準偏差    会場数      市場確率
+  ─────────────────────────────────────────────
+    コース1       878円        35      24     11.4%
+    コース2      1917円       130      24      5.2%
+    コース3      2276円       212      24      4.4%
+    コース4      2950円       340      24      3.4%
+    コース5      3722円       433      24      2.7%
+    コース6      5093円       825      24      2.0%
+
+保存: /home/user/test-cordex/boatrace/data/extra/jyo_course_payout_stats.csv
+完了!
+2026-03-23 07:23:13,420 [INFO] 
+[Step 3] convert_boatracecsv.py — 特徴量生成
+2026-03-23 07:23:13,420 [INFO]   $ /usr/local/bin/python /home/user/test-cordex/boatrace/convert_boatracecsv.py
+============================================================
+ボートレースCSV変換 (特徴量エンジニアリング)
+============================================================
+データ読み込み中...
+/home/user/test-cordex/boatrace/convert_boatracecsv.py:105: DtypeWarning: Columns (0: race_time, 1: race_type) have mixed types. Specify dtype option on import or set low_memory=False.
+  df = pd.read_csv(os.path.join(RAW_DIR, "race_results_big.csv"))
+  メインデータ: 416,582 行
+  レーサー成績をマージ
+  モーター成績をマージ
+  場別コース成績をマージ
+  市場払戻特徴量を計算中...
+    追加特徴量: ['mkt_avg_payout_90d', 'mkt_win_prob_90d', 'mkt_avg_payout_180d', 'mkt_win_prob_180d']
+特徴量生成中...
+  特徴量数: 68
+データ分割中...
+  Train: 291,607 (2024-04-01 00:00:00 ~ 2025-09-11 00:00:00)
+  Val:   62,487 (2025-09-11 00:00:00 ~ 2025-12-27 00:00:00)
+  Test:  62,488 (2025-12-27 00:00:00 ~ 2026-03-18 00:00:00)
+
+使用特徴量 (44個):
+  - course
+  - win_rate
+  - nirenritsu
+  - sanrenritsu
+  - motor_nirenritsu
+  - st
+  - tenji_time
+  - wind_speed
+  - wave
+  - water_temp
+  - month
+  - dayofweek
+  - is_weekend
+  - is_course1
+  - is_inner_course
+  - racer_class_num
+  - weather_num
+  - winrate_x_course
+  - st_x_course
+  - motor_racer_score
+  - avg_rank
+  - win_pct
+  - top2_pct
+  - top3_pct
+  - avg_st
+  - avg_tenji
+  - motor_avg_rank
+  - motor_win_pct
+  - motor_top2_pct
+  - jyo_course_win_pct
+  - jyo_course_avg_rank
+  - win_rate_rank
+  - st_rank
+  - tenji_rank
+  - nirenritsu_rank
+  - win_rate_vs_avg
+  - st_vs_avg
+  - tenji_vs_avg
+  - motor_rank
+  - avg_st_rank
+  - mkt_avg_payout_90d
+  - mkt_win_prob_90d
+  - mkt_avg_payout_180d
+  - mkt_win_prob_180d
+
+保存先: /home/user/test-cordex/boatrace/data/processed
+変換完了!
+2026-03-23 07:23:35,615 [INFO] 
+[Step 4] チェックポイントをバックアップ
+2026-03-23 07:23:35,924 [INFO]   バックアップ: /home/user/test-cordex/boatrace/checkpoints/backup_20260323_071755
+2026-03-23 07:23:35,924 [INFO] 
+[Step 5] run_train55k.py — LightGBM 学習
+2026-03-23 07:23:35,924 [INFO]   $ /usr/local/bin/python /home/user/test-cordex/boatrace/run_train55k.py
+============================================================
+ボートレース予測モデル 学習 (LightGBM)
+============================================================
+/home/user/test-cordex/boatrace/run_train55k.py:32: DtypeWarning: Columns (0: race_time, 1: race_type) have mixed types. Specify dtype option on import or set low_memory=False.
+  test = pd.read_csv(os.path.join(DATA_DIR, "test.csv"))
+総サンプル数: 416,582
+特徴量数: 44
+
+クラス比 (neg/pos): 5.00
+
+──────────────────────────────────────────────────
+モデル: lgbm_win (target=target_win)
+──────────────────────────────────────────────────
+Train: 291,607 samples (pos=48,601, neg=243,006)
+Val:   62,487 samples
+Test:  62,488 samples
+scale_pos_weight: 5.0
+学習中...
+Training until validation scores don't improve for 100 rounds
+[100]	train's binary_logloss: 0.491441	train's auc: 0.829314	val's binary_logloss: 0.502482	val's auc: 0.798669
+Early stopping, best iteration is:
+[13]	train's binary_logloss: 0.412432	train's auc: 0.8119	val's binary_logloss: 0.41427	val's auc: 0.797699
+学習時間: 5.6秒 (best_iteration=13)
+最適閾値 (val F1最大): 0.3093  (val F1=0.5520)
+
+--- Validation ---
+AUC: 0.7977
+LogLoss: 0.4143
+Accuracy (@thr=0.309): 0.8503
+
+--- Test ---
+AUC: 0.8046
+LogLoss: 0.4140
+Accuracy (@thr=0.309): 0.8484
+Precision: 0.5470
+Recall: 0.5487
+F1: 0.5479
+レース単位1着的中率: 0.5493 (ランダム比較: 0.1667)
+
+--- 特徴量重要度 (Top 10) ---
+  st_x_course                      353026.9
+  course                           338544.5
+  is_course1                       280424.6
+  jyo_course_win_pct               112696.1
+  win_pct                           30392.2
+  is_inner_course                   22230.8
+  motor_win_pct                     21632.1
+  avg_rank                           4467.2
+  top2_pct                           4181.6
+  jyo_course_avg_rank                3826.1
+
+モデル保存: /home/user/test-cordex/boatrace/checkpoints/real55k/lgbm_win.txt
+
+──────────────────────────────────────────────────
+モデル: lgbm_2nd (target=target_2nd)
+──────────────────────────────────────────────────
+Train: 291,607 samples (pos=48,601, neg=243,006)
+Val:   62,487 samples
+Test:  62,488 samples
+scale_pos_weight: 5.0
+学習中...
+Training until validation scores don't improve for 100 rounds
+[100]	train's binary_logloss: 0.608325	train's auc: 0.707923	val's binary_logloss: 0.622493	val's auc: 0.663007
+Early stopping, best iteration is:
+[3]	train's binary_logloss: 0.446319	train's auc: 0.676359	val's binary_logloss: 0.447075	val's auc: 0.656683
+学習時間: 5.6秒 (best_iteration=3)
+最適閾値 (val F1最大): 0.1981  (val F1=0.3501)
+
+--- Validation ---
+AUC: 0.6567
+LogLoss: 0.4471
+Accuracy (@thr=0.198): 0.6062
+
+--- Test ---
+AUC: 0.6564
+LogLoss: 0.4482
+Accuracy (@thr=0.198): 0.6058
+Precision: 0.2410
+Recall: 0.6298
+F1: 0.3487
+
+--- 特徴量重要度 (Top 10) ---
+  st_x_course                       74216.1
+  course                            48646.8
+  top2_pct                           8154.0
+  win_pct                            6821.5
+  motor_top2_pct                     6038.9
+  motor_win_pct                      4799.8
+  top3_pct                           1985.5
+  jyo_course_win_pct                 1622.2
+  tenji_vs_avg                        671.3
+  motor_racer_score                   557.6
+
+モデル保存: /home/user/test-cordex/boatrace/checkpoints/real55k/lgbm_2nd.txt
+
+──────────────────────────────────────────────────
+モデル: lgbm_top3 (target=target_top3)
+──────────────────────────────────────────────────
+Train: 291,607 samples (pos=145,802, neg=145,805)
+Val:   62,487 samples
+Test:  62,488 samples
+学習中...
+Training until validation scores don't improve for 100 rounds
+[100]	train's binary_logloss: 0.54762	train's auc: 0.788216	val's binary_logloss: 0.555882	val's auc: 0.77392
+Early stopping, best iteration is:
+[70]	train's binary_logloss: 0.553901	train's auc: 0.784823	val's binary_logloss: 0.559272	val's auc: 0.774012
+学習時間: 8.4秒 (best_iteration=70)
+最適閾値 (val F1最大): 0.3708  (val F1=0.7134)
+
+--- Validation ---
+AUC: 0.7740
+LogLoss: 0.5593
+Accuracy (@thr=0.371): 0.6718
+
+--- Test ---
+AUC: 0.7628
+LogLoss: 0.5747
+Accuracy (@thr=0.371): 0.6696
+Precision: 0.6327
+Recall: 0.8164
+F1: 0.7129
+
+--- 特徴量重要度 (Top 10) ---
+  st_x_course                      400064.1
+  course                           374670.5
+  is_inner_course                  153252.8
+  is_course1                        40059.9
+  jyo_course_win_pct                26995.7
+  jyo_course_avg_rank               26259.4
+  top3_pct                          23136.8
+  motor_avg_rank                     9457.5
+  motor_top2_pct                     4824.3
+  win_pct                            3484.9
+
+モデル保存: /home/user/test-cordex/boatrace/checkpoints/real55k/lgbm_top3.txt
+
+最適閾値保存: /home/user/test-cordex/boatrace/checkpoints/real55k/thresholds.json
+{
+  "lgbm_win": 0.30928594029879275,
+  "lgbm_2nd": 0.19812408947461863,
+  "lgbm_top3": 0.37079591119631766
+}
+
+============================================================
+2連単 的中率評価 (Test)  thr_win=0.309, thr_2nd=0.198
+============================================================
+2連単的中率: 0.1988 (19.9%)
+ランダム比較: 0.0333 (3.3%)  ※6×5=30通り
+
+============================================================
+学習完了サマリー
+============================================================
+モデル                  Val AUC      Test AUC     Test F1      閾値      
+────────────────────────────────────────────────────────────────
+1着予測                 0.7977       0.8046       0.5479       0.309   
+2着予測                 0.6567       0.6564       0.3487       0.198   
+3着以内                 0.7740       0.7628       0.7129       0.371   
+
+遷移行列を計算中 (P(2着=c2 | 1着=c1))...
+遷移行列保存: /home/user/test-cordex/boatrace/checkpoints/real55k/transition_matrix.json  (30セル)
+  P(2着=2 | 1着=1): 0.333
+  P(2着=3 | 1着=1): 0.268
+  P(2着=1 | 1着=2): 0.639
+  P(2着=1 | 1着=3): 0.617
+  P(2着=1 | 1着=4): 0.595
+
+チェックポイント: /home/user/test-cordex/boatrace/checkpoints/real55k
+学習完了!
+2026-03-23 07:25:49,478 [INFO] 
+[Step 6] calibrate.py — 確率キャリブレーション
+2026-03-23 07:25:49,478 [INFO]   $ /usr/local/bin/python /home/user/test-cordex/boatrace/calibrate.py
+============================================================
+確率キャリブレーション (Platt / Isotonic)
+============================================================
+/home/user/test-cordex/boatrace/calibrate.py:251: DtypeWarning: Columns (0: race_time, 1: race_type) have mixed types. Specify dtype option on import or set low_memory=False.
+  test = pd.read_csv(os.path.join(DATA_DIR, "test.csv"))
+Val  : 62,487 samples
+Test : 62,488 samples
+特徴量: 44
+
+───────────────────────────────────────────────────────
+[lgbm_win]  ベースライン
+  LogLoss : 0.41402
+  ECE     : 0.12747
+
+  Reliability diagram [Raw]
+        予測確率        実績確率         差
+  ───────────────────────────────────
+       0.175       0.043   -0.132 ▼
+       0.241       0.124   -0.118 ▼
+       0.385       0.486   +0.101 ▲
+       0.405       0.633   +0.228 ▲
+
+  Platt scaling (val fitting)
+  LogLoss : 0.35449  (-0.05953)
+  ECE     : 0.00547  (-0.12200)
+
+  Reliability diagram [Platt]
+        予測確率        実績確率         差
+  ───────────────────────────────────
+       0.060       0.060   -0.001  
+       0.141       0.142   +0.001  
+       0.222       0.215   -0.007  
+       0.350       0.051   -0.299 ▼
+       0.475       0.392   -0.083 ▼
+       0.551       0.572   +0.020 ▲
+  保存: /home/user/test-cordex/boatrace/checkpoints/real55k/lgbm_win_platt.pkl
+
+  Isotonic regression (val fitting)
+  LogLoss : 0.35393  (-0.06009)
+  ECE     : 0.00459  (-0.12288)
+
+  Reliability diagram [Isotonic]
+        予測確率        実績確率         差
+  ───────────────────────────────────
+       0.057       0.056   -0.001  
+       0.135       0.141   +0.006  
+       0.242       0.248   +0.006  
+       0.316       0.253   -0.063 ▼
+       0.472       0.453   -0.019 ▼
+       0.565       0.567   +0.003  
+       0.630       0.659   +0.029 ▲
+  保存: /home/user/test-cordex/boatrace/checkpoints/real55k/lgbm_win_isotonic.pkl
+
+  ★ 最良手法: isotonic  (LogLoss 0.35393)
+
+───────────────────────────────────────────────────────
+[lgbm_2nd]  ベースライン
+  LogLoss : 0.44823
+  ECE     : 0.05886
+
+  Reliability diagram [Raw]
+        予測確率        実績確率         差
+  ───────────────────────────────────
+       0.185       0.116   -0.069 ▼
+       0.208       0.250   +0.043 ▲
+
+  Platt scaling (val fitting)
+  LogLoss : 0.43435  (-0.01388)
+  ECE     : 0.02236  (-0.03650)
+
+  Reliability diagram [Platt]
+        予測確率        実績確率         差
+  ───────────────────────────────────
+       0.094       0.056   -0.038 ▼
+       0.146       0.132   -0.014 ▼
+       0.224       0.266   +0.042 ▲
+  保存: /home/user/test-cordex/boatrace/checkpoints/real55k/lgbm_2nd_platt.pkl
+
+  Isotonic regression (val fitting)
+  LogLoss : 0.43095  (-0.01728)
+  ECE     : 0.00754  (-0.05132)
+
+  Reliability diagram [Isotonic]
+        予測確率        実績確率         差
+  ───────────────────────────────────
+       0.073       0.070   -0.003  
+       0.142       0.146   +0.004  
+       0.234       0.243   +0.009  
+       0.323       0.286   -0.037 ▼
+       0.439       0.364   -0.075 ▼
+  保存: /home/user/test-cordex/boatrace/checkpoints/real55k/lgbm_2nd_isotonic.pkl
+
+  ★ 最良手法: isotonic  (LogLoss 0.43095)
+
+
+レポート保存: /home/user/test-cordex/boatrace/checkpoints/real55k/calibration_report.json
+
+============================================================
+2連単的中率 比較 (キャリブレーション前後)
+============================================================
+  2連単的中率 [Raw]: 0.1988 (19.9%)
+  2連単的中率 [Platt]: 0.1988 (19.9%)
+  2連単的中率 [Isotonic]: 0.1992 (19.9%)
+
+============================================================
+サマリー
+============================================================
+
+lgbm_win:
+  Base     LogLoss=0.41402  ECE=0.12747
+  Platt    LogLoss=0.35449  ECE=0.00547  (-0.05953)
+  Isotonic LogLoss=0.35393  ECE=0.00459  (-0.06009)
+  → 最良: isotonic
+
+lgbm_2nd:
+  Base     LogLoss=0.44823  ECE=0.05886
+  Platt    LogLoss=0.43435  ECE=0.02236  (-0.01388)
+  Isotonic LogLoss=0.43095  ECE=0.00754  (-0.01728)
+  → 最良: isotonic
+
+キャリブレーション完了!
+保存先: /home/user/test-cordex/boatrace/checkpoints/real55k/lgbm_{win,2nd}_{platt,isotonic}.pkl
+2026-03-23 07:26:16,732 [INFO] 
+[Step 7] backtest_ev.py — EV バックテスト
+2026-03-23 07:26:16,732 [INFO]   $ /usr/local/bin/python /home/user/test-cordex/boatrace/backtest_ev.py
+======================================================================
+2連単 期待値バックテスト
+======================================================================
+最適閾値を読み込み: {'lgbm_win': 0.30928594029879275, 'lgbm_2nd': 0.19812408947461863, 'lgbm_top3': 0.37079591119631766}
+キャリブレーター読み込み: ['lgbm_win_platt', 'lgbm_win_isotonic', 'lgbm_2nd_platt', 'lgbm_2nd_isotonic']
+遷移行列読み込み: 30セル
+テストデータ読み込み中...
+/home/user/test-cordex/boatrace/backtest_ev.py:277: DtypeWarning: Columns (0: race_time, 1: race_type) have mixed types. Specify dtype option on import or set low_memory=False.
+  test = pd.read_csv(os.path.join(DATA_DIR, "test.csv"))
+テストサンプル: 62,488  (2025-12-27 ~ 2026-03-18)
+2連単予測中...
+払戻データをマージ中...
+
+======================================================================
+期待値 (EV) バックテスト結果
+======================================================================
+総レース数: 10,459
+全ベット時の的中率: 19.9%
+全ベット時のROI:    28.4%
+
+    EV閾値     ベット数      的中数      的中率        ROI 推奨
+────────────────────────────────────────────────────────────
+    0.0    10,459     2,083    19.9%      28.4%  ← プラス収支
+    0.5     9,883     1,785    18.1%      27.7%  ← プラス収支
+    0.6     9,544     1,637    17.2%      27.3%  ← プラス収支
+    0.7     9,189     1,502    16.3%      26.5%  ← プラス収支
+    0.8     8,765     1,336    15.2%      23.8%  ← プラス収支
+    0.9     8,430     1,208    14.3%      21.4%  ← プラス収支
+    1.0     7,947       995    12.5%      13.9%  ← プラス収支
+    1.2     7,161       699     9.8%       0.4%  ← プラス収支
+    1.5     5,916       354     6.0%     -22.1%  
+
+最適EV閾値: 0.0  (ROI: 28.4%)
+
+======================================================================
+資金曲線 (EV≥0.0, 初期資金10,000円, 1ベット100円)
+======================================================================
+  総ベット数: 10,459
+  最終資金:   307,440円  (+2974.4%)
+  最大ドローダウン: 15.2%
+
+月別損益 (最新20ヶ月):
+         月    ベット     的中         損益      ROI
+  ────────────────────────────────────────────
+   2025-12    449     90 +  15,400円   34.3%
+   2026-01   2858    547 +  90,600円   31.7%
+   2026-02   5500   1135 + 134,740円   24.5%
+   2026-03   1652    311 +  56,700円   34.3%
+
+詳細結果CSV: /home/user/test-cordex/boatrace/checkpoints/real55k/backtest_result.csv
+2026-03-23 07:26:35,241 [INFO] 
+[Step 8] メトリクス比較
+2026-03-23 07:26:35,241 [INFO] 
+  ─────── メトリクス比較 ───────
+2026-03-23 07:26:35,241 [INFO]   モデル          指標                 前回       今回        差
+2026-03-23 07:26:35,241 [INFO]   ──────────────────────────────────────────────────────
+2026-03-23 07:26:35,241 [INFO]   lgbm_win     test_auc       0.7833   0.8046  +0.0213
+2026-03-23 07:26:35,241 [INFO]   lgbm_win     test_f1        0.0000   0.5479        ─
+2026-03-23 07:26:35,242 [INFO]   lgbm_2nd     test_auc       0.6518   0.6564  +0.0046
+2026-03-23 07:26:35,242 [INFO]   lgbm_2nd     test_f1        0.3517   0.3487  -0.0030
+2026-03-23 07:26:35,242 [INFO]   lgbm_top3    test_auc       0.7697   0.7628  -0.0069
+2026-03-23 07:26:35,242 [INFO]   lgbm_top3    test_f1        0.7138   0.7129  -0.0009
+2026-03-23 07:26:35,242 [INFO] 
+================================================================
+2026-03-23 07:26:35,242 [INFO] 再学習完了 ✓ メトリクスは前回と同等以上
+2026-03-23 07:26:35,242 [INFO] チェックポイント: /home/user/test-cordex/boatrace/checkpoints/real55k
+2026-03-23 07:26:35,242 [INFO] バックアップ:     /home/user/test-cordex/boatrace/checkpoints/backup_20260323_071755
+2026-03-23 07:26:35,242 [INFO] ================================================================
+2026-03-23 07:26:35,242 [INFO] 
+[通知] 外部チャンネルに送信中...
