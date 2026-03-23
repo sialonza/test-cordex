@@ -275,6 +275,29 @@ def train_model(train, val, test, feature_cols, target_col, model_name,
     return model, metrics, best_thr
 
 
+WINNER_THRESHOLD = 0.25  # この確率以上を「1着候補」とみなす
+
+
+def add_stacking_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    lgbm_win の予測確率を使ったスタッキング特徴量を生成する。
+    df には 'prob_win', 'date', 'jyo_cd', 'race_no' 列が必要。
+    """
+    df = df.copy()
+    race_group = ["date", "jyo_cd", "race_no"]
+
+    # レース内での1着確率の最大値
+    df["prob_win_max_in_race"] = df.groupby(race_group)["prob_win"].transform("max")
+
+    # 1着確率のレース内順位 (1=最高確率)
+    df["prob_win_rank"] = df.groupby(race_group)["prob_win"].rank(ascending=False)
+
+    # 1着候補フラグ: 1着確率が WINNER_THRESHOLD 以上の艇
+    df["is_likely_winner"] = (df["prob_win"] >= WINNER_THRESHOLD).astype(int)
+
+    return df
+
+
 def compute_transition_matrix(df: pd.DataFrame, min_samples: int = 20) -> dict:
     """
     trainデータから P(2着=c2 | 1着=c1) の遷移行列を計算する。
@@ -334,13 +357,37 @@ def main():
         scale_pos_weight=spw,
     )
 
-    # 2. 2着予測モデル (2連単用) — scale_pos_weight で少数クラスを重視
+    # --- スタッキング: lgbm_win の確率を lgbm_2nd の入力に追加 ---
+    stacking_feature_cols = feature_cols + ["prob_win", "prob_win_max_in_race",
+                                             "prob_win_rank", "is_likely_winner"]
+
+    def attach_win_probs(split_df, model):
+        """分割データに prob_win とスタッキング特徴量を付与"""
+        X = split_df[feature_cols].values
+        split_df = split_df.copy()
+        split_df["prob_win"] = model.predict(X, num_iteration=model.best_iteration)
+        split_df = add_stacking_features(split_df)
+        return split_df
+
+    train_stacked = attach_win_probs(train, model_win)
+    val_stacked   = attach_win_probs(val,   model_win)
+    test_stacked  = attach_win_probs(test,  model_win)
+
+    # スタッキング特徴量が存在するものだけ使用
+    available_stacking = [c for c in stacking_feature_cols if c in train_stacked.columns]
+
+    # 2. 2着予測モデル (スタッキング特徴量使用)
     model_2nd, metrics_2nd, thr_2nd = train_model(
-        train, val, test, feature_cols,
+        train_stacked, val_stacked, test_stacked, available_stacking,
         target_col="target_2nd",
         model_name="lgbm_2nd",
         scale_pos_weight=spw,
     )
+
+    # スタッキング特徴量リストを保存 (predict_today.py で参照)
+    stacking_cols_path = os.path.join(CKPT_DIR, "stacking_feature_cols.txt")
+    with open(stacking_cols_path, "w") as f:
+        f.write("\n".join(available_stacking))
 
     # 3. 3着以内予測モデル
     model_top3, metrics_top3, thr_top3 = train_model(
