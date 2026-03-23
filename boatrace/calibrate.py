@@ -204,15 +204,21 @@ def _apply_cal(cal, raw_prob):
     return np.clip(cal.predict(raw_prob), 1e-7, 1 - 1e-7)  # IsotonicRegression
 
 def eval_exacta_with_calibrator(test_df, model_win, model_2nd,
-                                 cal_win, cal_2nd, feature_cols, label=""):
+                                 cal_win, cal_2nd, feature_cols,
+                                 stacking_feature_cols=None, label=""):
     """
     calibrator を通した prob_win / prob_2nd で 2連単的中率を計算する。
     """
-    available = [c for c in feature_cols if c in test_df.columns]
-    X = test_df[available].values
+    if stacking_feature_cols is None:
+        stacking_feature_cols = feature_cols
 
-    p_win_raw = model_win.predict(X, num_iteration=model_win.best_iteration)
-    p_2nd_raw = model_2nd.predict(X, num_iteration=model_2nd.best_iteration)
+    available_win = [c for c in feature_cols if c in test_df.columns]
+    available_2nd = [c for c in stacking_feature_cols if c in test_df.columns]
+    X_win = test_df[available_win].values
+    X_2nd = test_df[available_2nd].values
+
+    p_win_raw = model_win.predict(X_win, num_iteration=model_win.best_iteration)
+    p_2nd_raw = model_2nd.predict(X_2nd, num_iteration=model_2nd.best_iteration)
 
     p_win = _apply_cal(cal_win, p_win_raw)
     p_2nd = _apply_cal(cal_2nd, p_2nd_raw)
@@ -257,9 +263,34 @@ def main():
     model_win = lgb.Booster(model_file=os.path.join(CKPT_DIR, "lgbm_win.txt"))
     model_2nd = lgb.Booster(model_file=os.path.join(CKPT_DIR, "lgbm_2nd.txt"))
 
+    # lgbm_2nd はスタッキング特徴量で学習されているため専用の特徴量リストを使用
+    stacking_cols_path = os.path.join(CKPT_DIR, "stacking_feature_cols.txt")
+    if os.path.exists(stacking_cols_path):
+        with open(stacking_cols_path) as f:
+            stacking_feature_cols = [l.strip() for l in f if l.strip()]
+    else:
+        stacking_feature_cols = feature_cols
+
+    # スタッキング用バリデーション/テストデータを生成 (prob_win を付加)
+    def attach_win_probs(df, model, feat_cols):
+        available = [c for c in feat_cols if c in df.columns]
+        X = df[available].values
+        df = df.copy()
+        df["prob_win"] = model.predict(X, num_iteration=model.best_iteration)
+        # prob_win_max_in_race, prob_win_rank, is_likely_winner を計算
+        grp = df.groupby(["date", "jyo_cd", "race_no"])["prob_win"]
+        df["prob_win_max_in_race"] = grp.transform("max")
+        df["prob_win_rank"] = grp.rank(ascending=False)
+        df["is_likely_winner"] = (df["prob_win_rank"] == 1).astype(int)
+        return df
+
+    val_stacked  = attach_win_probs(val,  model_win, feature_cols)
+    test_stacked = attach_win_probs(test, model_win, feature_cols)
+
     print(f"Val  : {len(val):,} samples")
     print(f"Test : {len(test):,} samples")
-    print(f"特徴量: {len(feature_cols)}")
+    print(f"特徴量(win): {len(feature_cols)}")
+    print(f"特徴量(2nd): {len(stacking_feature_cols)}")
 
     # キャリブレーション実行
     report = {}
@@ -267,7 +298,7 @@ def main():
         "lgbm_win", "target_win", model_win, val, test, feature_cols
     )
     report["lgbm_2nd"] = calibrate_model(
-        "lgbm_2nd", "target_2nd", model_2nd, val, test, feature_cols
+        "lgbm_2nd", "target_2nd", model_2nd, val_stacked, test_stacked, stacking_feature_cols
     )
 
     # レポート保存
@@ -283,23 +314,24 @@ def main():
 
     # Raw (キャリブレーションなし)
     eval_exacta_with_calibrator(
-        test, model_win, model_2nd, None, None, feature_cols, label="Raw"
+        test_stacked, model_win, model_2nd, None, None,
+        feature_cols, stacking_feature_cols, label="Raw"
     )
 
     # Platt
     cal_win_platt = joblib.load(os.path.join(CKPT_DIR, "lgbm_win_platt.pkl"))
     cal_2nd_platt = joblib.load(os.path.join(CKPT_DIR, "lgbm_2nd_platt.pkl"))
     eval_exacta_with_calibrator(
-        test, model_win, model_2nd, cal_win_platt, cal_2nd_platt, feature_cols,
-        label="Platt"
+        test_stacked, model_win, model_2nd, cal_win_platt, cal_2nd_platt,
+        feature_cols, stacking_feature_cols, label="Platt"
     )
 
     # Isotonic
     cal_win_iso = joblib.load(os.path.join(CKPT_DIR, "lgbm_win_isotonic.pkl"))
     cal_2nd_iso = joblib.load(os.path.join(CKPT_DIR, "lgbm_2nd_isotonic.pkl"))
     eval_exacta_with_calibrator(
-        test, model_win, model_2nd, cal_win_iso, cal_2nd_iso, feature_cols,
-        label="Isotonic"
+        test_stacked, model_win, model_2nd, cal_win_iso, cal_2nd_iso,
+        feature_cols, stacking_feature_cols, label="Isotonic"
     )
 
     # ── サマリー ─────────────────────────────────────────────────────────────

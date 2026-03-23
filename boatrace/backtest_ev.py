@@ -30,6 +30,14 @@ def load_models():
     with open(os.path.join(DATA_DIR, "feature_cols.txt")) as f:
         feature_cols = [l.strip() for l in f if l.strip()]
 
+    # スタッキング特徴量リストを読み込む (lgbm_2nd は stacking features を使用)
+    stacking_cols_path = os.path.join(CKPT_DIR, "stacking_feature_cols.txt")
+    if os.path.exists(stacking_cols_path):
+        with open(stacking_cols_path) as f:
+            stacking_feature_cols = [l.strip() for l in f if l.strip()]
+    else:
+        stacking_feature_cols = None
+
     thr_path = os.path.join(CKPT_DIR, "thresholds.json")
     if os.path.exists(thr_path):
         with open(thr_path) as f:
@@ -58,7 +66,7 @@ def load_models():
         trans_matrix = {}
         print("警告: transition_matrix.json が見つかりません。独立近似を使用します。")
 
-    return model_win, model_2nd, feature_cols, thresholds, calibrators, trans_matrix
+    return model_win, model_2nd, feature_cols, stacking_feature_cols, thresholds, calibrators, trans_matrix
 
 
 def _apply_calibrator(raw_proba, calibrators, key_platt, key_iso):
@@ -79,7 +87,8 @@ def _apply_calibrator(raw_proba, calibrators, key_platt, key_iso):
 
 
 def predict_exacta(test_df, model_win, model_2nd, feature_cols,
-                   thresholds=None, calibrators=None, trans_matrix=None):
+                   stacking_feature_cols=None, thresholds=None,
+                   calibrators=None, trans_matrix=None):
     """テストデータ全レースの2連単予測を返す DataFrame。"""
     if thresholds is None:
         thresholds = {"lgbm_win": 0.5, "lgbm_2nd": 0.5}
@@ -95,7 +104,24 @@ def predict_exacta(test_df, model_win, model_2nd, feature_cols,
 
     test_df = test_df.copy()
     raw_win = model_win.predict(X, num_iteration=model_win.best_iteration)
-    raw_2nd = model_2nd.predict(X, num_iteration=model_2nd.best_iteration)
+
+    # スタッキング: lgbm_win の確率を lgbm_2nd の入力に追加
+    WINNER_THRESHOLD = 0.25
+    race_group = ["date", "jyo_cd", "race_no"]
+    test_df["prob_win"] = raw_win
+    test_df["prob_win_max_in_race"] = test_df.groupby(race_group)["prob_win"].transform("max")
+    test_df["prob_win_rank"] = test_df.groupby(race_group)["prob_win"].rank(ascending=False)
+    test_df["is_likely_winner"] = (test_df["prob_win"] >= WINNER_THRESHOLD).astype(int)
+
+    if stacking_feature_cols is not None:
+        available_stacking = [c for c in stacking_feature_cols if c in test_df.columns]
+    else:
+        available_stacking = available + ["prob_win", "prob_win_max_in_race",
+                                          "prob_win_rank", "is_likely_winner"]
+        available_stacking = [c for c in available_stacking if c in test_df.columns]
+
+    X_2nd = test_df[available_stacking].values
+    raw_2nd = model_2nd.predict(X_2nd, num_iteration=model_2nd.best_iteration)
 
     # キャリブレーション適用 (isotonic 優先、なければ platt、なければ raw)
     test_df["prob_win"] = _apply_calibrator(raw_win, calibrators,
@@ -271,7 +297,7 @@ def main():
     print("2連単 期待値バックテスト")
     print("=" * 70)
 
-    model_win, model_2nd, feature_cols, thresholds, calibrators, trans_matrix = load_models()
+    model_win, model_2nd, feature_cols, stacking_feature_cols, thresholds, calibrators, trans_matrix = load_models()
 
     print("テストデータ読み込み中...")
     test = pd.read_csv(os.path.join(DATA_DIR, "test.csv"))
@@ -279,7 +305,7 @@ def main():
 
     print("2連単予測中...")
     pred_df = predict_exacta(test, model_win, model_2nd, feature_cols,
-                             thresholds, calibrators, trans_matrix)
+                             stacking_feature_cols, thresholds, calibrators, trans_matrix)
 
     print("払戻データをマージ中...")
     pred_df = attach_payouts(pred_df)
