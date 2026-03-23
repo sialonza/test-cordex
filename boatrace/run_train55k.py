@@ -424,10 +424,11 @@ def main():
     print("\n" + "=" * 60)
     print(f"2連単 的中率評価 (Test)  thr_win={thr_win:.3f}, thr_2nd={thr_2nd:.3f}")
     print("=" * 60)
-    X_test = test[feature_cols].values
+    X_test_win = test[feature_cols].values
+    X_test_2nd = test_stacked[available_stacking].values
     test_eval = test[["date", "jyo_cd", "race_no", "course", "rank"]].copy()
-    test_eval["prob_win"] = model_win.predict(X_test, num_iteration=model_win.best_iteration)
-    test_eval["prob_2nd"] = model_2nd.predict(X_test, num_iteration=model_2nd.best_iteration)
+    test_eval["prob_win"] = model_win.predict(X_test_win)
+    test_eval["prob_2nd"] = model_2nd.predict(X_test_2nd)
 
     results = []
     for (date, jyo, race), g in test_eval.groupby(["date", "jyo_cd", "race_no"]):
