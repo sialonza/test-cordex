@@ -127,6 +127,22 @@ def load_and_merge():
                        on=["jyo_cd", "course"], how="left")
         print(f"  場別コース成績をマージ")
 
+    # 直近フォームマージ
+    recent_form_path = os.path.join(EXTRA_DIR, "racer_recent_form.csv")
+    if os.path.exists(recent_form_path):
+        recent_form = pd.read_csv(recent_form_path)
+        df = df.merge(recent_form, on="racer_id", how="left")
+        print(f"  直近フォームをマージ")
+
+    # 会場別フォームマージ
+    venue_form_path = os.path.join(EXTRA_DIR, "racer_venue_form.csv")
+    if os.path.exists(venue_form_path):
+        venue_form = pd.read_csv(venue_form_path)
+        df["jyo_cd"] = df["jyo_cd"].astype(str).str.zfill(2)
+        venue_form["jyo_cd"] = venue_form["jyo_cd"].astype(str).str.zfill(2)
+        df = df.merge(venue_form, on=["racer_id", "jyo_cd"], how="left")
+        print(f"  会場別フォームをマージ")
+
     # 市場払戻特徴量 (過去90d/180d の会場×コース別平均払戻)
     payout_path = os.path.join(RAW_DIR, "race_payouts.csv")
     if os.path.exists(payout_path):
@@ -134,6 +150,44 @@ def load_and_merge():
         df = add_payout_market_features(df, payouts, windows=(90, 180))
     else:
         print("  警告: race_payouts.csv が見つかりません。市場特徴量をスキップします。")
+
+    return df
+
+
+def add_opponent_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    レース内の対戦相手特徴量を計算する。
+    各艇について「同レースの他5艇の情報」から相対的な強さを表す特徴量を生成する。
+    """
+    df = df.copy()
+    race_group = ["date", "jyo_cd", "race_no"]
+
+    # 対戦相手の平均勝率 = (レース合計 - 自分) / 5
+    race_sum_win = df.groupby(race_group)["win_rate"].transform("sum")
+    race_count   = df.groupby(race_group)["win_rate"].transform("count")
+    df["opponent_avg_win_rate"] = (race_sum_win - df["win_rate"]) / (race_count - 1).clip(lower=1)
+
+    # 対戦相手の最強選手の勝率
+    race_max_win = df.groupby(race_group)["win_rate"].transform("max")
+    df["opponent_max_win_rate"] = np.where(
+        df["win_rate"] == race_max_win,
+        df.groupby(race_group)["win_rate"].transform(lambda x: x.nlargest(2).iloc[-1] if len(x) > 1 else x.max()),
+        race_max_win,
+    )
+
+    # 自分の勝率 ÷ 最強対戦相手の勝率 (0除算防止)
+    df["win_rate_vs_best"] = df["win_rate"] / df["opponent_max_win_rate"].clip(lower=0.1)
+
+    # 対戦相手の平均クラス
+    class_map = {"A1": 4, "A2": 3, "B1": 2, "B2": 1}
+    if "racer_class_num" not in df.columns:
+        df["racer_class_num"] = df["racer_class"].map(class_map).fillna(0) if "racer_class" in df.columns else 0
+    race_sum_class = df.groupby(race_group)["racer_class_num"].transform("sum")
+    df["opponent_avg_class"] = (race_sum_class - df["racer_class_num"]) / (race_count - 1).clip(lower=1)
+
+    # 直近フォームのレース内順位 (form_win_5 があれば使用、なければ win_rate)
+    form_col = "form_win_5" if "form_win_5" in df.columns else "win_rate"
+    df["relative_form_rank"] = df.groupby(race_group)[form_col].rank(ascending=False)
 
     return df
 
@@ -197,6 +251,9 @@ def engineer_features(df):
     # avg_st (集計済み) のレース内順位
     df["avg_st_rank"] = df.groupby(race_group)["avg_st"].rank(ascending=True)
     # ────────────────────────────────────────────────────────
+
+    # 対戦相手特徴量
+    df = add_opponent_features(df)
 
     # ターゲット: 1着かどうか (二値分類)
     df["target_win"] = (df["rank"] == 1).astype(int)
@@ -267,6 +324,17 @@ def main():
         # 市場確率特徴量 (過去N日の会場×コース別平均払戻から推定)
         "mkt_avg_payout_90d", "mkt_win_prob_90d",
         "mkt_avg_payout_180d", "mkt_win_prob_180d",
+        # 直近フォーム
+        "form_win_3", "form_top2_3", "form_avg_rank_3", "form_avg_st_3",
+        "form_win_5", "form_top2_5", "form_avg_rank_5", "form_avg_st_5",
+        "form_win_10", "form_top2_10", "form_avg_rank_10", "form_avg_st_10",
+        "form_trend_win", "form_trend_rank",
+        "form_win_streak", "form_no_win_streak",
+        # 会場別フォーム
+        "form_venue_win_5", "form_venue_top2_5",
+        # 対戦相手特徴量
+        "opponent_avg_win_rate", "opponent_max_win_rate",
+        "win_rate_vs_best", "opponent_avg_class", "relative_form_rank",
     ]
 
     with open(os.path.join(PROC_DIR, "feature_cols.txt"), "w") as f:
