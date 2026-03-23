@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 import lightgbm as lgb
 from datetime import datetime
+from run_train55k import WINNER_THRESHOLD
 
 CKPT_DIR = os.path.join(os.path.dirname(__file__), "checkpoints", "real55k")
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data", "processed")
@@ -124,6 +125,40 @@ def prepare_features(df):
             on=["jyo_cd", "course"], how="left"
         )
 
+    # 直近フォームマージ
+    recent_form_path = os.path.join(EXTRA_DIR, "racer_recent_form.csv")
+    if os.path.exists(recent_form_path):
+        recent_form = pd.read_csv(recent_form_path)
+        df = df.merge(recent_form, on="racer_id", how="left")
+
+    # 会場別フォームマージ
+    venue_form_path = os.path.join(EXTRA_DIR, "racer_venue_form.csv")
+    if os.path.exists(venue_form_path):
+        venue_form = pd.read_csv(venue_form_path)
+        df["jyo_cd"] = df["jyo_cd"].astype(str).str.zfill(2)
+        venue_form["jyo_cd"] = venue_form["jyo_cd"].astype(str).str.zfill(2)
+        df = df.merge(venue_form, on=["racer_id", "jyo_cd"], how="left")
+
+    # 対戦相手特徴量 (df["date"] は prepare_features() 冒頭で変換済み)
+    race_group = ["date", "jyo_cd", "race_no"]
+    race_sum_win  = df.groupby(race_group)["win_rate"].transform("sum")
+    race_count    = df.groupby(race_group)["win_rate"].transform("count")
+    df["opponent_avg_win_rate"] = (race_sum_win - df["win_rate"]) / (race_count - 1).clip(lower=1)
+    race_max_win  = df.groupby(race_group)["win_rate"].transform("max")
+    df["opponent_max_win_rate"] = np.where(
+        df["win_rate"] == race_max_win,
+        df.groupby(race_group)["win_rate"].transform(
+            lambda x: x.nlargest(2).iloc[-1] if len(x) > 1 else x.max()
+        ),
+        race_max_win,
+    )
+    df["win_rate_vs_best"] = df["win_rate"] / df["opponent_max_win_rate"].clip(lower=0.1)
+    df["opponent_avg_class"] = (
+        df.groupby(race_group)["racer_class_num"].transform("sum") - df["racer_class_num"]
+    ) / (race_count - 1).clip(lower=1)
+    form_col = "form_win_5" if "form_win_5" in df.columns else "win_rate"
+    df["relative_form_rank"] = df.groupby(race_group)[form_col].rank(ascending=False)
+
     # ─── レース内相対特徴量 (学習時と同じ特徴量を生成) ────────
     race_group = ["date", "jyo_cd", "race_no"]
     df["win_rate_rank"] = df.groupby(race_group)["win_rate"].rank(ascending=False)
@@ -197,12 +232,29 @@ def main():
     print(f"対象レース数: {df['race_no'].nunique()} レース × {df['jyo_cd'].nunique()} 場")
     print(f"対象エントリー: {len(df)} 艇")
 
-    # 予測
-    available_features = [c for c in feature_cols if c in df.columns]
-    X = df[available_features].values
+    # 特徴量リスト（通常 + スタッキング）
+    stacking_cols_path = os.path.join(CKPT_DIR, "stacking_feature_cols.txt")
+    if os.path.exists(stacking_cols_path):
+        with open(stacking_cols_path) as f:
+            stacking_feature_cols = [line.strip() for line in f if line.strip()]
+    else:
+        stacking_feature_cols = feature_cols  # フォールバック
 
-    df["prob_win"] = model_win.predict(X)
-    df["prob_2nd"] = model_2nd.predict(X)
+    # Step 1: lgbm_win で1着確率を予測
+    available_win = [c for c in feature_cols if c in df.columns]
+    X_win = df[available_win].values
+    df["prob_win"] = model_win.predict(X_win, num_iteration=model_win.best_iteration)
+
+    # Step 2: スタッキング特徴量を計算 (WINNER_THRESHOLD は run_train55k からimport済み)
+    race_group = ["date", "jyo_cd", "race_no"]
+    df["prob_win_max_in_race"] = df.groupby(race_group)["prob_win"].transform("max")
+    df["prob_win_rank"] = df.groupby(race_group)["prob_win"].rank(ascending=False)
+    df["is_likely_winner"] = (df["prob_win"] >= WINNER_THRESHOLD).astype(int)
+
+    # Step 3: lgbm_2nd で2着確率を予測（スタッキング特徴量込み）
+    available_2nd = [c for c in stacking_feature_cols if c in df.columns]
+    X_2nd = df[available_2nd].values
+    df["prob_2nd"] = model_2nd.predict(X_2nd, num_iteration=model_2nd.best_iteration)
 
     # 2連単予測: レースごとに1着・2着を確定
     exacta_rows = []
