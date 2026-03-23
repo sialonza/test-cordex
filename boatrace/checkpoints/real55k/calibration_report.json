@@ -1,0 +1,24 @@
+{
+  "lgbm_win": {
+    "model": "lgbm_win",
+    "base_logloss": 0.36987,
+    "base_ece": 0.14507,
+    "platt_logloss": 0.28497,
+    "platt_ece": 0.01957,
+    "iso_logloss": 0.27904,
+    "iso_ece": 0.00605,
+    "best_method": "isotonic",
+    "best_logloss": 0.27904
+  },
+  "lgbm_2nd": {
+    "model": "lgbm_2nd",
+    "base_logloss": 0.4186,
+    "base_ece": 0.10689,
+    "platt_logloss": 0.34466,
+    "platt_ece": 0.01652,
+    "iso_logloss": 0.34492,
+    "iso_ece": 0.01338,
+    "best_method": "platt",
+    "best_logloss": 0.34466
+  }
+}

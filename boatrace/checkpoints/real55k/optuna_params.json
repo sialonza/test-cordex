@@ -1,0 +1,32 @@
+{
+  "lgbm_win": {
+    "num_leaves": 179,
+    "learning_rate": 0.006959930734225864,
+    "min_child_samples": 40,
+    "feature_fraction": 0.9995707955069996,
+    "bagging_fraction": 0.8924827291703828,
+    "reg_alpha": 0.8021240449165493,
+    "reg_lambda": 0.9559008611778028,
+    "max_depth": 6
+  },
+  "lgbm_2nd": {
+    "num_leaves": 38,
+    "learning_rate": 0.015590014226761156,
+    "min_child_samples": 46,
+    "feature_fraction": 0.9729048599868566,
+    "bagging_fraction": 0.6486633922188373,
+    "reg_alpha": 0.6962990719946743,
+    "reg_lambda": 0.3992140401648411,
+    "max_depth": 12
+  },
+  "lgbm_top3": {
+    "num_leaves": 209,
+    "learning_rate": 0.06838399903097442,
+    "min_child_samples": 41,
+    "feature_fraction": 0.7975143760589432,
+    "bagging_fraction": 0.8307085587225687,
+    "reg_alpha": 0.30673521336766557,
+    "reg_lambda": 0.48770289605061334,
+    "max_depth": 5
+  }
+}
