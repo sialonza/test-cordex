@@ -2,7 +2,10 @@ __pycache__/
 boatrace/notify_config.json
 *.pyc
 *.pyo
-boatrace/checkpoints/
+boatrace/checkpoints/*
+!boatrace/checkpoints/real55k/
+boatrace/checkpoints/real55k/*
+!boatrace/checkpoints/real55k/transition_matrix.json
 boatrace/data/raw/race_results_full.csv
 boatrace/data/raw/race_payouts_full.csv
 boatrace/data/raw/download_full_checkpoint.json
