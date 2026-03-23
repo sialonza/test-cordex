@@ -228,6 +228,58 @@ def all_combos_ev(race_no: int, odds_dict: dict[tuple, float],
     return pd.DataFrame(rows).sort_values("ev", ascending=False)
 
 
+def ev_select_predictions(boat_probs_df: pd.DataFrame,
+                          odds_by_race: dict,
+                          ev_threshold: float = 1.0) -> pd.DataFrame:
+    """
+    全30組み合わせのEVを計算し、EV最大の組合せを選択する。
+
+    EV ≥ ev_threshold のレースのみ "◎ BET"、それ以外は "スキップ" を出力する。
+    boat_probs_df 列: jyo_cd, jyo_name, race_no, course, prob_win, prob_2nd
+    """
+    rows = []
+    for (jyo_cd, jyo_name, race_no), race_df in boat_probs_df.groupby(
+            ["jyo_cd", "jyo_name", "race_no"]):
+        odds_dict = odds_by_race.get(int(race_no), {})
+        prob_win = dict(zip(race_df["course"].astype(int),
+                            race_df["prob_win"].astype(float)))
+        prob_2nd = dict(zip(race_df["course"].astype(int),
+                            race_df["prob_2nd"].astype(float)))
+
+        if not odds_dict:
+            rows.append({
+                "jyo_cd": jyo_cd, "jyo_name": jyo_name, "race_no": int(race_no),
+                "pred_1st": None, "pred_2nd": None,
+                "prob_exacta": None, "actual_odds": None, "ev": None, "bet": "",
+            })
+            continue
+
+        ev_df = all_combos_ev(int(race_no), odds_dict, prob_win, prob_2nd)
+        if ev_df.empty:
+            rows.append({
+                "jyo_cd": jyo_cd, "jyo_name": jyo_name, "race_no": int(race_no),
+                "pred_1st": None, "pred_2nd": None,
+                "prob_exacta": None, "actual_odds": None, "ev": None, "bet": "",
+            })
+            continue
+
+        best = ev_df.iloc[0]  # EV 降順ソート済み
+        ev_val = float(best["ev"])
+        bet = "◎ BET" if ev_val >= ev_threshold else "スキップ"
+        rows.append({
+            "jyo_cd":      jyo_cd,
+            "jyo_name":    jyo_name,
+            "race_no":     int(race_no),
+            "pred_1st":    int(best["c1"]),
+            "pred_2nd":    int(best["c2"]),
+            "prob_exacta": round(float(best["prob_approx"]), 4),
+            "actual_odds": float(best["odds"]),
+            "ev":          round(ev_val, 4),
+            "bet":         bet,
+        })
+    return pd.DataFrame(rows)
+
+
 # ── 表示 ─────────────────────────────────────────────────────────────────────
 
 def print_odds_table(race_no: int, odds_dict: dict[tuple, float],
@@ -278,11 +330,15 @@ def print_ev_summary(pred_df: pd.DataFrame) -> None:
 
     # ── プラス EV レース ─────────────────────────────────────────────────────
     pos_ev = pred_df[pred_df["ev"].notna() & (pred_df["ev"] >= 1.0)].copy()
+    skip_ev = pred_df[pred_df["bet"] == "スキップ"]
     print(f"\n{'=' * 80}")
     if len(pos_ev) == 0:
         print("  プラス期待値 (EV≥1.0) の組み合わせは見つかりませんでした。")
+        if len(skip_ev) > 0:
+            print(f"  スキップ: {len(skip_ev)}レース (EV<1.0 のため見送り)")
     else:
-        print(f"  ◎ プラス期待値 (EV≥1.0) の買い目: {len(pos_ev)}件")
+        print(f"  ◎ プラス期待値 (EV≥1.0) の買い目: {len(pos_ev)}件"
+              + (f"  /  スキップ: {len(skip_ev)}件" if len(skip_ev) > 0 else ""))
         print(f"{'=' * 80}")
         print(f"  {'場':>6} {'R':>3}  {'組合せ':^8}  "
               f"{'確率':>7}  {'倍率':>7}  {'EV':>6}")
@@ -349,6 +405,18 @@ def main():
         pred_df = pd.read_csv(args.pred)
         print(f"予測データ読み込み: {len(pred_df)} レース (from {args.pred})")
 
+        # 艇別確率 CSV があれば EV 選択モードを使う
+        boat_probs_path = args.pred.replace("predictions_", "boat_probs_")
+        if os.path.exists(boat_probs_path):
+            boat_probs_df = pd.read_csv(boat_probs_path)
+            boat_probs_df["jyo_cd"] = boat_probs_df["jyo_cd"].astype(str).str.zfill(2)
+            use_ev_select = True
+            print(f"艇別確率CSV検出: {boat_probs_path}")
+            print("→ EV最大組合せ選択モード (EV<1.0 はスキップ)")
+        else:
+            boat_probs_df = None
+            use_ev_select = False
+
         # 場コードと日付を CSV から取得
         jyo_cds = pred_df["jyo_cd"].astype(str).str.zfill(2).unique()
         date_str = args.date
@@ -374,8 +442,13 @@ def main():
             print(f"\n{jyo_name}({jyo_cd}) {len(race_nos)}レース分オッズ取得中...")
             odds_by_race = fetch_odds_for_races(jyo_cd, race_nos, date_str)
 
-            jyo_pred = ev_for_predictions(jyo_pred, odds_by_race)
-            all_pred_dfs.append(jyo_pred)
+            if use_ev_select and boat_probs_df is not None:
+                jyo_boats = boat_probs_df[boat_probs_df["jyo_cd"] == jyo_cd].copy()
+                jyo_boats = jyo_boats[jyo_boats["race_no"].isin(race_nos)]
+                jyo_result = ev_select_predictions(jyo_boats, odds_by_race, ev_threshold=1.0)
+            else:
+                jyo_result = ev_for_predictions(jyo_pred, odds_by_race)
+            all_pred_dfs.append(jyo_result)
 
             # --all オプション: 各レースのオッズ表も表示
             if args.all:

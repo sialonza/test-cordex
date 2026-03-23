@@ -541,8 +541,15 @@ def _apply_cal(raw: np.ndarray, calibrators: dict, key: str) -> np.ndarray:
 
 def predict_races(df: pd.DataFrame, model_win, model_2nd,
                   feature_cols: list, thresholds: dict,
-                  calibrators: dict, trans_matrix: dict = None) -> pd.DataFrame:
-    """全レースの2連単予測を返す。"""
+                  calibrators: dict, trans_matrix: dict = None) -> tuple:
+    """
+    全レースの2連単予測を返す。
+
+    Returns:
+        (exacta_df, boat_df) のタプル。
+        exacta_df: 1レース1行 (後方互換)
+        boat_df:   1艇1行の艇別確率 (EV選択用)
+    """
     if trans_matrix is None:
         trans_matrix = {}
 
@@ -561,6 +568,20 @@ def predict_races(df: pd.DataFrame, model_win, model_2nd,
     df["prob_win"] = _apply_cal(raw_win, calibrators, "lgbm_win_isotonic")
     df["prob_2nd"] = _apply_cal(raw_2nd, calibrators, "lgbm_2nd_isotonic")
 
+    # ── 艇別確率 DataFrame (EV選択で使用) ────────────────────────────────────
+    boat_rows = []
+    for _, row in df.iterrows():
+        boat_rows.append({
+            "jyo_cd":   row["jyo_cd"],
+            "jyo_name": row["jyo_name"],
+            "race_no":  int(row["race_no"]),
+            "course":   int(row["course"]),
+            "prob_win": round(float(row["prob_win"]), 4),
+            "prob_2nd": round(float(row["prob_2nd"]), 4),
+        })
+    boat_df = pd.DataFrame(boat_rows)
+
+    # ── レース単位の予測 DataFrame (後方互換) ────────────────────────────────
     rows = []
     for (jyo_cd, jyo_name, race_no), g in df.groupby(
             ["jyo_cd", "jyo_name", "race_no"]):
@@ -589,7 +610,7 @@ def predict_races(df: pd.DataFrame, model_win, model_2nd,
             "breakeven_odds": int(breakeven),
         })
 
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows), boat_df
 
 
 # ── 表示 ─────────────────────────────────────────────────────────────────────
@@ -727,8 +748,9 @@ def main():
     df = prepare_features(df)
 
     print("予測中...")
-    pred_df = predict_races(df, model_win, model_2nd,
-                            feature_cols, thresholds, calibrators, trans_matrix=trans_matrix)
+    pred_df, boat_df = predict_races(df, model_win, model_2nd,
+                                     feature_cols, thresholds, calibrators,
+                                     trans_matrix=trans_matrix)
 
     print_predictions(pred_df)
 
@@ -737,7 +759,13 @@ def main():
         CKPT_DIR, f"predictions_{args.date}.csv"
     )
     pred_df.to_csv(out_path, index=False, encoding="utf-8-sig")
+
+    # 艇別確率 CSV (fetch_odds.py の EV 選択モードで使用)
+    boat_out = out_path.replace("predictions_", "boat_probs_")
+    boat_df.to_csv(boat_out, index=False, encoding="utf-8-sig")
+
     print(f"\n予測結果保存: {out_path}")
+    print(f"艇別確率保存: {boat_out}")
     print("完了!")
 
 
