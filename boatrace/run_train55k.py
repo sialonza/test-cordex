@@ -19,6 +19,8 @@ from sklearn.metrics import (
     precision_recall_curve,
 )
 import joblib
+import optuna
+optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data", "processed")
 CKPT_DIR = os.path.join(os.path.dirname(__file__), "checkpoints", "real55k")
@@ -52,6 +54,70 @@ def find_best_threshold(y_true, y_prob):
     return float(thresholds[best_idx]), float(f1s[best_idx])
 
 
+def tune_hyperparams(X_train, y_train, X_val, y_val,
+                     feature_cols, scale_pos_weight=None,
+                     n_trials=50) -> dict:
+    """
+    Optuna で LightGBM のハイパーパラメータを最適化する。
+    最適化指標: val AUC 最大化。
+    """
+    def objective(trial):
+        params = {
+            "objective": "binary",
+            "metric": "auc",
+            "boosting_type": "gbdt",
+            "verbose": -1,
+            "seed": 42,
+            "n_jobs": -1,
+            "num_leaves": trial.suggest_int("num_leaves", 31, 255),
+            "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.1, log=True),
+            "min_child_samples": trial.suggest_int("min_child_samples", 10, 100),
+            "feature_fraction": trial.suggest_float("feature_fraction", 0.5, 1.0),
+            "bagging_fraction": trial.suggest_float("bagging_fraction", 0.5, 1.0),
+            "bagging_freq": 5,
+            "reg_alpha": trial.suggest_float("reg_alpha", 0.0, 1.0),
+            "reg_lambda": trial.suggest_float("reg_lambda", 0.0, 1.0),
+            "max_depth": trial.suggest_int("max_depth", 5, 15),
+        }
+        if scale_pos_weight is not None:
+            params["scale_pos_weight"] = scale_pos_weight
+
+        dtrain = lgb.Dataset(X_train, label=y_train, feature_name=feature_cols)
+        dval   = lgb.Dataset(X_val,   label=y_val,   feature_name=feature_cols, reference=dtrain)
+
+        callbacks = [
+            lgb.early_stopping(stopping_rounds=50, verbose=False),
+            lgb.log_evaluation(period=-1),
+        ]
+        model = lgb.train(
+            params, dtrain,
+            num_boost_round=500,
+            valid_sets=[dval],
+            valid_names=["val"],
+            callbacks=callbacks,
+        )
+        return model.best_score["val"]["auc"]
+
+    study = optuna.create_study(direction="maximize",
+                                sampler=optuna.samplers.TPESampler(seed=42))
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+
+    best = study.best_params
+    best.update({
+        "objective": "binary",
+        "metric": ["binary_logloss", "auc"],
+        "boosting_type": "gbdt",
+        "bagging_freq": 5,
+        "verbose": -1,
+        "seed": 42,
+        "n_jobs": -1,
+    })
+    if scale_pos_weight is not None:
+        best["scale_pos_weight"] = scale_pos_weight
+    print(f"  Optuna best val AUC: {study.best_value:.4f}  (試行={n_trials})")
+    return best
+
+
 def train_model(train, val, test, feature_cols, target_col, model_name,
                 scale_pos_weight=None):
     """LightGBMモデルの学習と評価"""
@@ -70,27 +136,15 @@ def train_model(train, val, test, feature_cols, target_col, model_name,
     print(f"Val:   {len(X_val):,} samples")
     print(f"Test:  {len(X_test):,} samples")
 
-    # LightGBM パラメータ
-    params = {
-        "objective": "binary",
-        "metric": ["binary_logloss", "auc"],
-        "boosting_type": "gbdt",
-        "num_leaves": 127,
-        "learning_rate": 0.03,
-        "feature_fraction": 0.8,
-        "bagging_fraction": 0.8,
-        "bagging_freq": 5,
-        "min_child_samples": 30,
-        "reg_alpha": 0.05,
-        "reg_lambda": 0.1,
-        "max_depth": 10,
-        "verbose": -1,
-        "seed": 42,
-        "n_jobs": -1,
-    }
-    if scale_pos_weight is not None:
-        params["scale_pos_weight"] = scale_pos_weight
-        print(f"scale_pos_weight: {scale_pos_weight}")
+    # Optunaでハイパーパラメータをチューニング
+    print(f"  Optunaチューニング中 (50試行)...")
+    best_params = tune_hyperparams(
+        X_train, y_train, X_val, y_val,
+        feature_cols=feature_cols,
+        scale_pos_weight=scale_pos_weight,
+        n_trials=50,
+    )
+    params = best_params
 
     # データセット作成
     dtrain = lgb.Dataset(X_train, label=y_train, feature_name=feature_cols)
@@ -206,6 +260,12 @@ def train_model(train, val, test, feature_cols, target_col, model_name,
         "test_f1": round(test_f1, 4),
         "n_features": len(feature_cols),
         "features": feature_cols,
+        "optuna_best_params": {
+            k: v for k, v in best_params.items()
+            if k not in ("objective", "metric", "boosting_type",
+                         "bagging_freq", "verbose", "seed", "n_jobs",
+                         "scale_pos_weight")
+        },
     }
 
     metrics_path = os.path.join(CKPT_DIR, f"{model_name}_metrics.json")
@@ -288,6 +348,18 @@ def main():
         target_col="target_top3",
         model_name="lgbm_top3",
     )
+
+    # Optunaベストパラメータを保存
+    # tune_hyperparams() が返す best dict を metrics 経由で保存する
+    # （model.params は LightGBM 内部デフォルト値も含むため使わない）
+    optuna_params = {
+        "lgbm_win":  metrics_win.get("optuna_best_params", {}),
+        "lgbm_2nd":  metrics_2nd.get("optuna_best_params", {}),
+        "lgbm_top3": metrics_top3.get("optuna_best_params", {}),
+    }
+    with open(os.path.join(CKPT_DIR, "optuna_params.json"), "w") as f:
+        json.dump(optuna_params, f, indent=2)
+    print(f"Optunaパラメータ保存: {CKPT_DIR}/optuna_params.json")
 
     # 最適閾値を保存
     thresholds = {
