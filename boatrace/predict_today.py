@@ -160,7 +160,6 @@ def prepare_features(df):
     df["relative_form_rank"] = df.groupby(race_group)[form_col].rank(ascending=False)
 
     # ─── レース内相対特徴量 (学習時と同じ特徴量を生成) ────────
-    race_group = ["date", "jyo_cd", "race_no"]
     df["win_rate_rank"] = df.groupby(race_group)["win_rate"].rank(ascending=False)
     df["st_rank"] = df.groupby(race_group)["st"].rank(ascending=True)
     df["tenji_rank"] = df.groupby(race_group)["tenji_time"].rank(ascending=True)
@@ -243,7 +242,7 @@ def main():
     # Step 1: lgbm_win で1着確率を予測
     available_win = [c for c in feature_cols if c in df.columns]
     X_win = df[available_win].values
-    df["prob_win"] = model_win.predict(X_win, num_iteration=model_win.best_iteration)
+    df["prob_win"] = model_win.predict(X_win)
 
     # Step 2: スタッキング特徴量を計算 (WINNER_THRESHOLD は run_train55k からimport済み)
     race_group = ["date", "jyo_cd", "race_no"]
@@ -254,7 +253,7 @@ def main():
     # Step 3: lgbm_2nd で2着確率を予測（スタッキング特徴量込み）
     available_2nd = [c for c in stacking_feature_cols if c in df.columns]
     X_2nd = df[available_2nd].values
-    df["prob_2nd"] = model_2nd.predict(X_2nd, num_iteration=model_2nd.best_iteration)
+    df["prob_2nd"] = model_2nd.predict(X_2nd)
 
     # 2連単予測: レースごとに1着・2着を確定
     exacta_rows = []
