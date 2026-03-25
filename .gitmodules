@@ -1,0 +1,6 @@
+[submodule "claude-subconscious"]
+	path = claude-subconscious
+	url = https://github.com/letta-ai/claude-subconscious.git
+[submodule "superpowers"]
+	path = superpowers
+	url = https://github.com/obra/superpowers.git
