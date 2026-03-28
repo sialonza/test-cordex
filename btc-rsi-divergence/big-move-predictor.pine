@@ -1,6 +1,6 @@
 //@version=5
-indicator("BTC Big Move Predictor - Ultra", overlay=true,
-     max_labels_count=500, max_lines_count=500, max_bars_back=500)
+indicator("BTC Big Move Predictor - Ultra v2", overlay=true,
+     max_lines_count=500, max_labels_count=500, max_bars_back=500)
 
 // ============================================================
 //  BTC限定
@@ -12,316 +12,524 @@ if not isBTC
 // ============================================================
 //  入力パラメータ
 // ============================================================
-grp1 = "Detection Sensitivity"
+grp1 = "Core"
 sqzLen      = input.int(20, "Squeeze Period", minval=5, group=grp1)
 atrLen      = input.int(14, "ATR Period", minval=2, group=grp1)
 volLen      = input.int(20, "Volume MA Period", minval=5, group=grp1)
-minScore    = input.int(60, "Min Signal Score %", minval=10, maxval=100, group=grp1)
+minScore    = input.int(55, "Min Signal Score %", minval=10, maxval=100, group=grp1)
+confirmBars = input.int(5, "Confirmation Window (bars)", minval=1, maxval=20, group=grp1)
 
-grp2 = "Visual"
-highColor   = input.color(color.new(#FFD600, 0), "High Probability", group=grp2)
-midColor    = input.color(color.new(#FF9100, 0), "Medium Probability", group=grp2)
-showLabels  = input.bool(true, "Show Date Labels", group=grp2)
-showBG      = input.bool(true, "Show Background Highlight", group=grp2)
+grp2 = "MTF Squeeze"
+useMTF      = input.bool(true, "Multi-Timeframe Squeeze", group=grp2)
 
-grp3 = "Alerts"
-alertEnabled = input.bool(true, "Enable Alerts", group=grp3)
+grp3 = "Cross-Asset"
+useDXY      = input.bool(true, "DXY Correlation", group=grp3)
+useGold     = input.bool(true, "Gold Correlation", group=grp3)
+useSPX      = input.bool(true, "S&P500 Correlation", group=grp3)
+
+grp4 = "Seasonality"
+useSeason   = input.bool(true, "BTC Seasonality Filter", group=grp4)
+
+grp5 = "Adaptive"
+useAdaptive = input.bool(true, "Adaptive Thresholds", group=grp5)
+regimeLen   = input.int(100, "Regime Detection Period", minval=20, group=grp5)
+
+grp6 = "Visual"
+highColor   = input.color(color.new(#FFD600, 0), "S Grade", group=grp6)
+midColor    = input.color(color.new(#FF9100, 0), "A Grade", group=grp6)
+lowColor    = input.color(color.new(#29B6F6, 0), "B Grade", group=grp6)
+showLabels  = input.bool(true, "Show Labels", group=grp6)
+showBG      = input.bool(true, "Show Background", group=grp6)
+showStats   = input.bool(true, "Show Hit Rate Stats", group=grp6)
+
+grp7 = "Alerts"
+alertEnabled = input.bool(true, "Enable Alerts", group=grp7)
 
 // ============================================================
-//  指標計算
+//  基本指標
 // ============================================================
-
-// --- ATR & Historical Volatility ---
 atrVal     = ta.atr(atrLen)
 atrSMA     = ta.sma(atrVal, sqzLen)
-atrRatio   = atrVal / atrSMA  // 1未満=圧縮中, 1超=拡大中
-hvol       = ta.stdev(math.log(close / close[1]), sqzLen) * math.sqrt(365) * 100 // 年率HV%
+rsiVal     = ta.rsi(close, 14)
+[macdLine, signalLine, macdHist] = ta.macd(close, 12, 26, 9)
+ema9       = ta.ema(close, 9)
+ema21      = ta.ema(close, 21)
+ema50      = ta.ema(close, 50)
+ema200     = ta.ema(close, 200)
+obv_       = ta.cum(close > close[1] ? volume : close < close[1] ? -volume : 0)
+obvEma     = ta.ema(obv_, 20)
+volSMA     = ta.sma(volume, volLen)
+volRatio   = volSMA > 0 ? volume / volSMA : 1.0
 
-// ATR最小値検出（過去N期間で最も圧縮されている度合い）
-atrMin     = ta.lowest(atrVal, sqzLen)
-atrMax     = ta.highest(atrVal, sqzLen)
-atrCompression = atrMax > 0 ? 1.0 - (atrVal - atrMin) / (atrMax - atrMin) : 0
+// ============================================================
+//  市場レジーム検出（適応型閾値用）
+// ============================================================
+hvol = ta.stdev(math.log(close / close[1]), regimeLen) * math.sqrt(365) * 100
+hvolSMA = ta.sma(hvol, regimeLen)
+isLowVolRegime  = hvol < hvolSMA * 0.7
+isHighVolRegime = hvol > hvolSMA * 1.3
 
-// --- Bollinger Band Squeeze ---
+// 適応型乗数（低ボラ相場ではより敏感に、高ボラ相場ではより厳格に）
+adaptMult = useAdaptive ? (isLowVolRegime ? 1.3 : isHighVolRegime ? 0.7 : 1.0) : 1.0
+
+// ============================================================
+//  1. BB Squeeze (max 12)
+// ============================================================
 [bbUpper, bbBasis, bbLower] = ta.bb(close, sqzLen, 2.0)
-bbWidth    = (bbUpper - bbLower) / bbBasis * 100
+bbWidth    = bbBasis > 0 ? (bbUpper - bbLower) / bbBasis * 100 : 0
 bbWidthSMA = ta.sma(bbWidth, sqzLen)
-bbSqueeze  = bbWidth < bbWidthSMA * 0.75  // バンド幅が平均の75%未満
-
-// BBWidth最小値検出
 bbWidthMin = ta.lowest(bbWidth, sqzLen * 2)
 bbWidthMax = ta.highest(bbWidth, sqzLen * 2)
 bbCompression = bbWidthMax > bbWidthMin ? 1.0 - (bbWidth - bbWidthMin) / (bbWidthMax - bbWidthMin) : 0
+bbSqueeze  = bbWidth < bbWidthSMA * 0.75
 
-// --- Keltner Channel Squeeze ---
-kcMid      = ta.ema(close, sqzLen)
-kcRange    = ta.atr(sqzLen) * 1.5
-kcUpper    = kcMid + kcRange
-kcLower    = kcMid - kcRange
-kcSqueeze  = bbUpper < kcUpper and bbLower > kcLower  // BB内がKC内に収まる = 強スクイーズ
+// ============================================================
+//  2. KC Squeeze (max 15)
+// ============================================================
+kcMid   = ta.ema(close, sqzLen)
+kcRange = ta.atr(sqzLen) * 1.5
+kcUpper = kcMid + kcRange
+kcLower = kcMid - kcRange
+kcSqueeze = bbUpper < kcUpper and bbLower > kcLower
 
-// --- Volume分析 ---
-volSMA     = ta.sma(volume, volLen)
-volRatio   = volume / volSMA
-volDryUp   = volRatio < 0.6   // 出来高枯渇
-volSpike   = volRatio > 2.0   // 出来高急増
+// ============================================================
+//  3. ATR圧縮 (max 10)
+// ============================================================
+atrMin = ta.lowest(atrVal, sqzLen)
+atrMax = ta.highest(atrVal, sqzLen)
+atrCompression = atrMax > atrMin ? 1.0 - (atrVal - atrMin) / (atrMax - atrMin) : 0
 
-// 出来高の縮小トレンド検出（直近N本が連続して平均以下）
+// ============================================================
+//  4. 出来高枯渇 (max 8)
+// ============================================================
+volDryUp = volRatio < 0.6
 volDecayCount = 0
 for i = 0 to 4
     if volume[i] < volSMA[i]
         volDecayCount += 1
 
-// --- 値幅縮小（Narrow Range）---
-range_     = high - low
-rangeSMA   = ta.sma(range_, sqzLen)
-narrowRange = range_ < rangeSMA * 0.5     // 通常の半分以下のレンジ
+// ============================================================
+//  5. Narrow Range (max 8)
+// ============================================================
+range_   = high - low
+rangeSMA = ta.sma(range_, sqzLen)
 nrCount = 0
 for i = 0 to 3
-    if (high[i] - low[i]) < rangeSMA[i] * 0.6
+    if rangeSMA[i] > 0 and (high[i] - low[i]) < rangeSMA[i] * 0.6
         nrCount += 1
 
-// --- Inside Bar検出 ---
-insideBar  = high < high[1] and low > low[1]
+// ============================================================
+//  6. Inside Bar (max 6)
+// ============================================================
 insideBarCount = 0
 for i = 0 to 4
     if high[i] < high[i+1] and low[i] > low[i+1]
         insideBarCount += 1
 
-// --- RSI極端域からの収束 ---
-rsiVal     = ta.rsi(close, 14)
-rsiRange   = ta.highest(rsiVal, sqzLen) - ta.lowest(rsiVal, sqzLen)
-rsiCompressed = rsiRange < 15  // RSIレンジが15pt以下に圧縮
-
-// --- MACD ヒストグラム収束 ---
-[macdLine, signalLine, macdHist] = ta.macd(close, 12, 26, 9)
-macdHistAbs = math.abs(macdHist)
-macdHistSMA = ta.sma(macdHistAbs, sqzLen)
-macdFlat    = macdHistAbs < macdHistSMA * 0.3  // ヒストグラムが平坦化
-
-// --- 価格の三角持ち合い検出 ---
-highLine   = ta.highest(high, sqzLen)
-lowLine    = ta.lowest(low, sqzLen)
-priceRange = highLine - lowLine
-priceRangePrev = ta.highest(high, sqzLen)[sqzLen] - ta.lowest(low, sqzLen)[sqzLen]
-triangleCompression = priceRangePrev > 0 ? priceRange / priceRangePrev : 1.0
-isTriangle = triangleCompression < 0.6  // レンジが前期間の60%以下に圧縮
-
-// --- EMA収束（デスクロス/ゴールデンクロス直前）---
-ema9   = ta.ema(close, 9)
-ema21  = ta.ema(close, 21)
-ema50  = ta.ema(close, 50)
-emaDiff = math.abs(ema9 - ema21) / close * 100
-emaConverging = emaDiff < 0.3  // EMA9とEMA21が0.3%以内
-
-// --- OBV乖離 ---
-obv_    = ta.cum(close > close[1] ? volume : close < close[1] ? -volume : 0)
-obvEma  = ta.ema(obv_, 20)
-obvDiv  = math.abs(obv_ - obvEma) / math.abs(obvEma) * 100
+// ============================================================
+//  7. RSI圧縮 (max 6)
+// ============================================================
+rsiHi = ta.highest(rsiVal, sqzLen)
+rsiLo = ta.lowest(rsiVal, sqzLen)
+rsiRange_ = rsiHi - rsiLo
+rsiCompressed = rsiRange_ < 15
 
 // ============================================================
-//  大変動スコア計算（0-100）
-//  複数の圧縮シグナルが重なるほどスコアが高い
+//  8. MACD平坦化 (max 5)
+// ============================================================
+macdHistAbs = math.abs(macdHist)
+macdHistSMA = ta.sma(macdHistAbs, sqzLen)
+macdFlat = macdHistSMA > 0 ? macdHistAbs < macdHistSMA * 0.3 : false
+
+// ============================================================
+//  9. 三角持ち合い (max 8)
+// ============================================================
+highLine  = ta.highest(high, sqzLen)
+lowLine   = ta.lowest(low, sqzLen)
+priceRng  = highLine - lowLine
+priceRngPrev = ta.highest(high, sqzLen)[sqzLen] - ta.lowest(low, sqzLen)[sqzLen]
+triComp = priceRngPrev > 0 ? priceRng / priceRngPrev : 1.0
+isTriangle = triComp < 0.6
+
+// ============================================================
+// 10. EMA収束 (max 4)
+// ============================================================
+emaDiff = close > 0 ? math.abs(ema9 - ema21) / close * 100 : 0
+emaConverging = emaDiff < 0.3
+
+// ============================================================
+// 11. MTF Squeeze合流 (max 12)
+// ============================================================
+f_htfSqueeze(tf) =>
+    [bu, bm, bl] = request.security(syminfo.tickerid, tf, ta.bb(close, 20, 2.0), lookahead=barmerge.lookahead_off)
+    km = request.security(syminfo.tickerid, tf, ta.ema(close, 20), lookahead=barmerge.lookahead_off)
+    kr = request.security(syminfo.tickerid, tf, ta.atr(20) * 1.5, lookahead=barmerge.lookahead_off)
+    ku = km + kr
+    kl = km - kr
+    not na(bu) and not na(ku) ? (bu < ku and bl > kl) : false
+
+htfSqz1 = useMTF and timeframe.isintraday ? f_htfSqueeze(timeframe.multiplier <= 15 ? "60" : "240") : false
+htfSqz2 = useMTF ? f_htfSqueeze(timeframe.isintraday ? "D" : "W") : false
+
+// ============================================================
+// 12. クロスアセット相関 (max 9)
+// ============================================================
+// DXY急変検出
+dxyClose = useDXY ? request.security("TVC:DXY", timeframe.period, close, lookahead=barmerge.lookahead_off) : na
+dxyATR   = useDXY ? request.security("TVC:DXY", timeframe.period, ta.atr(14), lookahead=barmerge.lookahead_off) : na
+dxyChange = not na(dxyClose) and not na(dxyClose[1]) ? math.abs(dxyClose - dxyClose[1]) : 0
+dxyVolatile = not na(dxyATR) and dxyATR > 0 ? dxyChange > dxyATR * 1.5 : false
+
+// Gold相関
+goldClose = useGold ? request.security("TVC:GOLD", timeframe.period, close, lookahead=barmerge.lookahead_off) : na
+goldATR   = useGold ? request.security("TVC:GOLD", timeframe.period, ta.atr(14), lookahead=barmerge.lookahead_off) : na
+goldChange = not na(goldClose) and not na(goldClose[1]) ? math.abs(goldClose - goldClose[1]) : 0
+goldVolatile = not na(goldATR) and goldATR > 0 ? goldChange > goldATR * 1.5 : false
+
+// S&P500相関
+spxClose = useSPX ? request.security("SP:SPX", timeframe.period, close, lookahead=barmerge.lookahead_off) : na
+spxATR   = useSPX ? request.security("SP:SPX", timeframe.period, ta.atr(14), lookahead=barmerge.lookahead_off) : na
+spxChange = not na(spxClose) and not na(spxClose[1]) ? math.abs(spxClose - spxClose[1]) : 0
+spxVolatile = not na(spxATR) and spxATR > 0 ? spxChange > spxATR * 1.5 : false
+
+// ============================================================
+// 13. BTC曜日・時間帯の季節性 (max 5)
+// ============================================================
+dow = dayofweek
+hourNow = hour
+// BTCの統計的に大きく動きやすい時間帯
+// 月曜早朝（週末明け）、水曜・木曜（米国経済指標）、金曜（週末前ポジ調整）
+isVolatileDay = useSeason ? (dow == dayofweek.monday or dow == dayofweek.wednesday or dow == dayofweek.thursday or dow == dayofweek.friday) : false
+// NY時間帯（13-21 UTC）とアジア開場（0-3 UTC）
+isVolatileHour = useSeason and timeframe.isintraday ? (hourNow >= 13 and hourNow <= 21) or (hourNow >= 0 and hourNow <= 3) : false
+
+// ============================================================
+// 14. ローソク足パターン認識（圧縮ゾーン出口）(max 5)
+// ============================================================
+// Doji（実体が非常に小さい）
+bodySize = math.abs(close - open)
+candleRange = high - low
+isDoji = candleRange > 0 ? bodySize / candleRange < 0.1 : false
+
+// Spinning Top
+isSpinningTop = candleRange > 0 ? bodySize / candleRange < 0.3 and bodySize / candleRange > 0.1 : false
+
+// Hammer / Inverted Hammer
+lowerWick = math.min(open, close) - low
+upperWick = high - math.max(open, close)
+isHammer = candleRange > 0 ? lowerWick > bodySize * 2 and upperWick < bodySize * 0.5 : false
+isInvHammer = candleRange > 0 ? upperWick > bodySize * 2 and lowerWick < bodySize * 0.5 : false
+
+// Engulfing
+bullEngulf = close > open and close[1] < open[1] and close > open[1] and open < close[1]
+bearEngulf = close < open and close[1] > open[1] and close < open[1] and open > close[1]
+
+candleSignal = isDoji or isSpinningTop or isHammer or isInvHammer or bullEngulf or bearEngulf
+
+// ============================================================
+//  スコア計算（適応型）
 // ============================================================
 score = 0.0
 
-// (1) BB Squeeze: max 15
-if bbSqueeze
-    score += 10.0
-score += bbCompression * 5.0
+// (1) BB Squeeze max12
+score += bbSqueeze ? 7.0 * adaptMult : 0.0
+score += bbCompression * 5.0 * adaptMult
 
-// (2) Keltner Squeeze: max 15（最強のスクイーズ指標）
-if kcSqueeze
-    score += 15.0
+// (2) KC Squeeze max15
+score += kcSqueeze ? 15.0 * adaptMult : 0.0
 
-// (3) ATR圧縮: max 12
-score += atrCompression * 12.0
+// (3) ATR圧縮 max10
+score += atrCompression * 10.0 * adaptMult
 
-// (4) 出来高枯渇: max 10
-if volDryUp
-    score += 5.0
-score += math.min(5.0, volDecayCount * 1.0)
+// (4) 出来高枯渇 max8
+score += volDryUp ? 4.0 : 0.0
+score += math.min(4.0, volDecayCount * 0.8)
 
-// (5) Narrow Range: max 10
-if narrowRange
-    score += 5.0
-score += math.min(5.0, nrCount * 1.25)
+// (5) Narrow Range max8
+score += math.min(8.0, nrCount * 2.0)
 
-// (6) Inside Bar: max 8
-score += math.min(8.0, insideBarCount * 2.0)
+// (6) Inside Bar max6
+score += math.min(6.0, insideBarCount * 1.5)
 
-// (7) RSI圧縮: max 8
-if rsiCompressed
-    score += 8.0
+// (7) RSI圧縮 max6
+score += rsiCompressed ? 6.0 : 0.0
 
-// (8) MACD平坦化: max 7
-if macdFlat
-    score += 7.0
+// (8) MACD平坦化 max5
+score += macdFlat ? 5.0 : 0.0
 
-// (9) 三角持ち合い: max 10
-if isTriangle
-    score += 10.0
+// (9) 三角持ち合い max8
+score += isTriangle ? 8.0 : 0.0
 
-// (10) EMA収束: max 5
-if emaConverging
-    score += 5.0
+// (10) EMA収束 max4
+score += emaConverging ? 4.0 : 0.0
 
-// 正規化
-finalScore = math.min(100.0, math.round(score))
+// (11) MTF Squeeze合流 max12
+score += htfSqz1 ? 6.0 : 0.0
+score += htfSqz2 ? 6.0 : 0.0
 
-// ============================================================
-//  シグナル判定
-// ============================================================
-isHighSignal = finalScore >= 75
-isMidSignal  = finalScore >= minScore and finalScore < 75
-isSignal     = finalScore >= minScore
+// (12) クロスアセット max9
+score += dxyVolatile ? 3.0 : 0.0
+score += goldVolatile ? 3.0 : 0.0
+score += spxVolatile ? 3.0 : 0.0
 
-// 連続シグナルの抑制（前のバーでも出ていたら控えめに）
-var int lastSignalBar = 0
-isNewSignal = isSignal and (bar_index - lastSignalBar) >= 3
-if isNewSignal
-    lastSignalBar := bar_index
+// (13) 季節性 max5
+score += isVolatileDay ? 3.0 : 0.0
+score += isVolatileHour ? 2.0 : 0.0
+
+// (14) ローソク足パターン max5
+score += candleSignal ? 5.0 : 0.0
+
+// 正規化（最大118pt → 100%）
+finalScore = math.min(100.0, math.round(score / 1.18))
 
 // ============================================================
-//  描画 - 背景ハイライト
-// ============================================================
-bgCol = showBG ?
-     (isHighSignal ? color.new(highColor, 75) :
-      isMidSignal  ? color.new(midColor, 85) : na) : na
-bgcolor(bgCol, title="Signal Background")
-
-// ============================================================
-//  描画 - 日付ラベル
-// ============================================================
-if showLabels and isNewSignal
-    grade = isHighSignal ? "S" : "A"
-    txt = grade + " | " + str.tostring(finalScore) + "%"
-    lblColor = isHighSignal ? highColor : midColor
-    label.new(bar_index, low - atrVal * 0.5, txt,
-         color=lblColor, textcolor=color.new(#000000, 0),
-         size=size.small, style=label.style_label_up)
-
-// ============================================================
-//  描画 - 天井・底の予測バー（縦線）
-// ============================================================
-if isNewSignal and isHighSignal
-    line.new(bar_index, high + atrVal * 2, bar_index, low - atrVal * 2,
-         color=color.new(highColor, 50), width=2, style=line.style_solid)
-
-// ============================================================
-//  方向予測（RSIダイバージェンス＋EMAトレンド統合）
+//  方向予測（強化版）
 // ============================================================
 bullBias = 0
 bearBias = 0
 
-// RSI位置
-if rsiVal < 35
-    bullBias += 2
-if rsiVal > 65
-    bearBias += 2
+// RSI
+if rsiVal < 30
+    bullBias += 3
+else if rsiVal < 40
+    bullBias += 1
+if rsiVal > 70
+    bearBias += 3
+else if rsiVal > 60
+    bearBias += 1
 
 // EMA配列
 if ema9 > ema21 and ema21 > ema50
-    bullBias += 1
+    bullBias += 2
 if ema9 < ema21 and ema21 < ema50
-    bearBias += 1
+    bearBias += 2
+if not na(ema200)
+    if close > ema200
+        bullBias += 1
+    else
+        bearBias += 1
 
-// MACD方向
+// MACD
 if macdHist > 0 and macdHist > macdHist[1]
     bullBias += 1
 if macdHist < 0 and macdHist < macdHist[1]
     bearBias += 1
 
-// OBVトレンド
+// OBV
 if obv_ > obvEma
     bullBias += 1
 if obv_ < obvEma
     bearBias += 1
 
-// 上位足トレンド
+// HTF RSI
 rsi_htf = request.security(syminfo.tickerid,
      timeframe.isintraday ? (timeframe.multiplier <= 60 ? "240" : "D") : "W",
      ta.rsi(close, 14), lookahead=barmerge.lookahead_off)
 if not na(rsi_htf)
-    if rsi_htf < 40
+    if rsi_htf < 35
         bullBias += 2
-    if rsi_htf > 60
+    else if rsi_htf < 45
+        bullBias += 1
+    if rsi_htf > 65
         bearBias += 2
+    else if rsi_htf > 55
+        bearBias += 1
 
-directionScore = bullBias - bearBias  // +なら上方向、-なら下方向
+// DXY逆相関
+if not na(dxyClose) and not na(dxyClose[1])
+    if dxyClose < dxyClose[1]
+        bullBias += 1  // ドル安→BTC高
+    else
+        bearBias += 1
 
-// 方向矢印
-if showLabels and isNewSignal and isHighSignal
-    if directionScore >= 2
-        label.new(bar_index, low - atrVal * 1.5, "UP",
+// Engulfingパターン
+if bullEngulf
+    bullBias += 2
+if bearEngulf
+    bearBias += 2
+
+dirScore = bullBias - bearBias
+
+// ============================================================
+//  シグナル判定
+// ============================================================
+isSignal = finalScore >= minScore
+var int lastSigBar = 0
+isNew = isSignal and (bar_index - lastSigBar) >= 3
+if isNew
+    lastSigBar := bar_index
+
+grade = finalScore >= 80 ? "S" : finalScore >= 65 ? "A" : "B"
+gradeColor = finalScore >= 80 ? highColor : finalScore >= 65 ? midColor : lowColor
+
+// ============================================================
+//  的中率トラッキング（バックテスト統計）
+// ============================================================
+var int totalSignals = 0
+var int hitSignals   = 0
+
+// シグナル後N本以内にATR×2以上の変動があったかチェック
+var float[] sigPrices = array.new_float(0)
+var int[]   sigBars   = array.new_int(0)
+var float[] sigATRs   = array.new_float(0)
+
+if isNew
+    totalSignals += 1
+    array.push(sigPrices, close)
+    array.push(sigBars, bar_index)
+    array.push(sigATRs, atrVal)
+
+// 過去シグナルの検証
+if array.size(sigBars) > 0
+    toRemove = array.new_int(0)
+    for i = 0 to array.size(sigBars) - 1
+        sb = array.get(sigBars, i)
+        sp = array.get(sigPrices, i)
+        sa = array.get(sigATRs, i)
+        elapsed = bar_index - sb
+
+        if elapsed >= 1 and elapsed <= confirmBars
+            // ATR×2以上の変動があったら的中
+            maxMove = math.max(
+                 math.abs(high - sp),
+                 math.abs(sp - low))
+            if maxMove >= sa * 2.0
+                hitSignals += 1
+                array.push(toRemove, i)
+        else if elapsed > confirmBars
+            array.push(toRemove, i)
+
+    // 古いエントリを削除（逆順）
+    if array.size(toRemove) > 0
+        for j = array.size(toRemove) - 1 to 0
+            idx = array.get(toRemove, j)
+            if idx < array.size(sigBars)
+                array.remove(sigBars, idx)
+                array.remove(sigPrices, idx)
+                array.remove(sigATRs, idx)
+
+hitRate = totalSignals > 0 ? math.round(hitSignals / totalSignals * 100) : 0
+
+// ============================================================
+//  描画
+// ============================================================
+// 背景ハイライト
+bgCol = showBG and isSignal ?
+     (finalScore >= 80 ? color.new(highColor, 70) :
+      finalScore >= 65 ? color.new(midColor, 80) :
+      finalScore >= minScore ? color.new(lowColor, 88) : na) : na
+bgcolor(bgCol, title="Signal BG")
+
+// ラベル
+if showLabels and isNew
+    dirTxt = dirScore >= 3 ? " UP" : dirScore <= -3 ? " DN" : ""
+    txt = grade + " " + str.tostring(finalScore) + "%" + dirTxt
+    label.new(bar_index, low - atrVal * 0.5, txt,
+         color=gradeColor, textcolor=#000000,
+         size=size.small, style=label.style_label_up)
+
+// S級シグナルの縦線
+if isNew and finalScore >= 80
+    line.new(bar_index, high + atrVal * 2, bar_index, low - atrVal * 2,
+         color=color.new(highColor, 40), width=3, style=line.style_solid)
+
+// 方向矢印（S級のみ）
+if showLabels and isNew and finalScore >= 80
+    if dirScore >= 3
+        label.new(bar_index, low - atrVal * 1.8, "▲",
              color=color.new(#00E676, 0), textcolor=#000000,
-             size=size.tiny, style=label.style_label_up)
-    else if directionScore <= -2
-        label.new(bar_index, high + atrVal * 1.5, "DOWN",
+             size=size.normal, style=label.style_label_up)
+    else if dirScore <= -3
+        label.new(bar_index, high + atrVal * 1.8, "▼",
              color=color.new(#FF1744, 0), textcolor=#FFFFFF,
-             size=size.tiny, style=label.style_label_down)
+             size=size.normal, style=label.style_label_down)
 
-// ============================================================
-//  予測レンジバンド（大変動時の想定到達レンジ）
-// ============================================================
-expectedMove = atrVal * 3.0  // ATRの3倍を想定最大変動幅
-plot(isHighSignal ? close + expectedMove : na, "Expected Upper", color=color.new(#00E676, 70), style=plot.style_circles, linewidth=1)
-plot(isHighSignal ? close - expectedMove : na, "Expected Lower", color=color.new(#FF1744, 70), style=plot.style_circles, linewidth=1)
+// 予測レンジ
+expMove = atrVal * 3.0
+plot(isNew and finalScore >= 75 ? close + expMove : na, "Exp Upper", color=color.new(#00E676, 60), style=plot.style_circles)
+plot(isNew and finalScore >= 75 ? close - expMove : na, "Exp Lower", color=color.new(#FF1744, 60), style=plot.style_circles)
 
 // ============================================================
 //  アラート
 // ============================================================
-if alertEnabled and isNewSignal
-    if isHighSignal
-        alert("BTC BIG MOVE WARNING [S級 " + str.tostring(finalScore) + "%] | " +
-             (directionScore >= 2 ? "Bias: UP" : directionScore <= -2 ? "Bias: DOWN" : "Direction: UNKNOWN") +
-             " | " + syminfo.ticker + " " + timeframe.period, alert.freq_once_per_bar_close)
-    else
-        alert("BTC Move Alert [A級 " + str.tostring(finalScore) + "%] | " +
+if alertEnabled and isNew
+    dirTxt = dirScore >= 3 ? "UP" : dirScore <= -3 ? "DOWN" : "UNKNOWN"
+    if finalScore >= 80
+        alert("BTC BIG MOVE [S " + str.tostring(finalScore) + "%] Dir:" + dirTxt +
+             " | Hit:" + str.tostring(hitRate) + "% | " +
+             syminfo.ticker + " " + timeframe.period, alert.freq_once_per_bar_close)
+    else if finalScore >= 65
+        alert("BTC Move [A " + str.tostring(finalScore) + "%] | " +
              syminfo.ticker + " " + timeframe.period, alert.freq_once_per_bar_close)
 
 // ============================================================
 //  ダッシュボード
 // ============================================================
-var table dash = table.new(position.top_right, 2, 12, bgcolor=color.new(#0D1117, 10), border_width=1, border_color=color.new(#30363D, 0))
+var table dash = table.new(position.top_right, 2, 16, bgcolor=color.new(#0D1117, 5), border_width=1, border_color=color.new(#30363D, 0))
 
 if barstate.islast
+    // ヘッダー
     table.cell(dash, 0, 0, "Big Move Score", text_color=#FFD600, text_size=size.small)
-    table.cell(dash, 1, 0, str.tostring(finalScore) + "%",
-         text_color=finalScore >= 75 ? #FFD600 : finalScore >= 60 ? #FF9100 : #8B949E,
-         text_size=size.small)
+    scCol = finalScore >= 80 ? #FFD600 : finalScore >= 65 ? #FF9100 : finalScore >= minScore ? #29B6F6 : #484F58
+    table.cell(dash, 1, 0, str.tostring(finalScore) + "% [" + grade + "]", text_color=scCol, text_size=size.small)
 
-    table.cell(dash, 0, 1, "BB Squeeze", text_color=#C9D1D9, text_size=size.tiny)
-    table.cell(dash, 1, 1, bbSqueeze ? "ACTIVE" : "---", text_color=bbSqueeze ? #FFD600 : #484F58, text_size=size.tiny)
+    // 的中率
+    table.cell(dash, 0, 1, "Hit Rate", text_color=#C9D1D9, text_size=size.tiny)
+    hrCol = hitRate >= 80 ? #00E676 : hitRate >= 60 ? #FFD600 : #FF1744
+    table.cell(dash, 1, 1, str.tostring(hitRate) + "% (" + str.tostring(hitSignals) + "/" + str.tostring(totalSignals) + ")", text_color=hrCol, text_size=size.tiny)
 
-    table.cell(dash, 0, 2, "KC Squeeze", text_color=#C9D1D9, text_size=size.tiny)
-    table.cell(dash, 1, 2, kcSqueeze ? "ACTIVE" : "---", text_color=kcSqueeze ? #FF1744 : #484F58, text_size=size.tiny)
+    // レジーム
+    table.cell(dash, 0, 2, "Regime", text_color=#C9D1D9, text_size=size.tiny)
+    regTxt = isLowVolRegime ? "LOW VOL" : isHighVolRegime ? "HIGH VOL" : "NORMAL"
+    regCol = isLowVolRegime ? #FFD600 : isHighVolRegime ? #FF1744 : #8B949E
+    table.cell(dash, 1, 2, regTxt, text_color=regCol, text_size=size.tiny)
 
-    table.cell(dash, 0, 3, "ATR Compress", text_color=#C9D1D9, text_size=size.tiny)
-    table.cell(dash, 1, 3, str.tostring(atrCompression * 100, "#") + "%", text_color=atrCompression > 0.7 ? #FFD600 : #8B949E, text_size=size.tiny)
+    // 各要素
+    table.cell(dash, 0, 3, "BB Squeeze", text_color=#C9D1D9, text_size=size.tiny)
+    table.cell(dash, 1, 3, bbSqueeze ? "ON" : "---", text_color=bbSqueeze ? #FFD600 : #484F58, text_size=size.tiny)
 
-    table.cell(dash, 0, 4, "Volume", text_color=#C9D1D9, text_size=size.tiny)
-    table.cell(dash, 1, 4, volDryUp ? "DRY UP" : str.tostring(volRatio, "#.#") + "x", text_color=volDryUp ? #FF9100 : #8B949E, text_size=size.tiny)
+    table.cell(dash, 0, 4, "KC Squeeze", text_color=#C9D1D9, text_size=size.tiny)
+    table.cell(dash, 1, 4, kcSqueeze ? "ON" : "---", text_color=kcSqueeze ? #FF1744 : #484F58, text_size=size.tiny)
 
-    table.cell(dash, 0, 5, "Narrow Range", text_color=#C9D1D9, text_size=size.tiny)
-    table.cell(dash, 1, 5, str.tostring(nrCount) + "/4", text_color=nrCount >= 3 ? #FFD600 : #8B949E, text_size=size.tiny)
+    table.cell(dash, 0, 5, "ATR Compress", text_color=#C9D1D9, text_size=size.tiny)
+    table.cell(dash, 1, 5, str.tostring(math.round(atrCompression * 100)) + "%", text_color=atrCompression > 0.7 ? #FFD600 : #8B949E, text_size=size.tiny)
 
-    table.cell(dash, 0, 6, "Inside Bars", text_color=#C9D1D9, text_size=size.tiny)
-    table.cell(dash, 1, 6, str.tostring(insideBarCount), text_color=insideBarCount >= 2 ? #FFD600 : #8B949E, text_size=size.tiny)
+    table.cell(dash, 0, 6, "Volume", text_color=#C9D1D9, text_size=size.tiny)
+    table.cell(dash, 1, 6, volDryUp ? "DRY" : str.tostring(volRatio, "#.#") + "x", text_color=volDryUp ? #FF9100 : #8B949E, text_size=size.tiny)
 
-    table.cell(dash, 0, 7, "RSI Squeeze", text_color=#C9D1D9, text_size=size.tiny)
-    table.cell(dash, 1, 7, rsiCompressed ? "YES" : "---", text_color=rsiCompressed ? #FFD600 : #484F58, text_size=size.tiny)
+    table.cell(dash, 0, 7, "NR Bars", text_color=#C9D1D9, text_size=size.tiny)
+    table.cell(dash, 1, 7, str.tostring(nrCount) + "/4", text_color=nrCount >= 3 ? #FFD600 : #8B949E, text_size=size.tiny)
 
-    table.cell(dash, 0, 8, "MACD Flat", text_color=#C9D1D9, text_size=size.tiny)
-    table.cell(dash, 1, 8, macdFlat ? "YES" : "---", text_color=macdFlat ? #FFD600 : #484F58, text_size=size.tiny)
+    table.cell(dash, 0, 8, "Triangle", text_color=#C9D1D9, text_size=size.tiny)
+    table.cell(dash, 1, 8, isTriangle ? "YES" : "---", text_color=isTriangle ? #FF1744 : #484F58, text_size=size.tiny)
 
-    table.cell(dash, 0, 9, "Triangle", text_color=#C9D1D9, text_size=size.tiny)
-    table.cell(dash, 1, 9, isTriangle ? "DETECTED" : "---", text_color=isTriangle ? #FF1744 : #484F58, text_size=size.tiny)
+    table.cell(dash, 0, 9, "MTF Squeeze", text_color=#C9D1D9, text_size=size.tiny)
+    mtfTxt = htfSqz1 and htfSqz2 ? "2TF" : htfSqz1 or htfSqz2 ? "1TF" : "---"
+    mtfCol = htfSqz1 and htfSqz2 ? #FF1744 : htfSqz1 or htfSqz2 ? #FFD600 : #484F58
+    table.cell(dash, 1, 9, mtfTxt, text_color=mtfCol, text_size=size.tiny)
 
-    table.cell(dash, 0, 10, "EMA Converge", text_color=#C9D1D9, text_size=size.tiny)
-    table.cell(dash, 1, 10, emaConverging ? "YES" : "---", text_color=emaConverging ? #FFD600 : #484F58, text_size=size.tiny)
+    table.cell(dash, 0, 10, "Cross-Asset", text_color=#C9D1D9, text_size=size.tiny)
+    caCount = (dxyVolatile ? 1 : 0) + (goldVolatile ? 1 : 0) + (spxVolatile ? 1 : 0)
+    table.cell(dash, 1, 10, str.tostring(caCount) + "/3", text_color=caCount >= 2 ? #FFD600 : #8B949E, text_size=size.tiny)
 
-    dirTxt = directionScore >= 2 ? "BULLISH" : directionScore <= -2 ? "BEARISH" : "NEUTRAL"
-    dirCol = directionScore >= 2 ? #00E676 : directionScore <= -2 ? #FF1744 : #8B949E
-    table.cell(dash, 0, 11, "Direction Bias", text_color=#C9D1D9, text_size=size.tiny)
-    table.cell(dash, 1, 11, dirTxt, text_color=dirCol, text_size=size.tiny)
+    table.cell(dash, 0, 11, "Candle Pattern", text_color=#C9D1D9, text_size=size.tiny)
+    cpTxt = bullEngulf ? "BullEngulf" : bearEngulf ? "BearEngulf" : isDoji ? "Doji" : isHammer ? "Hammer" : isInvHammer ? "InvHammer" : "---"
+    table.cell(dash, 1, 11, cpTxt, text_color=candleSignal ? #FFD600 : #484F58, text_size=size.tiny)
+
+    table.cell(dash, 0, 12, "Season", text_color=#C9D1D9, text_size=size.tiny)
+    sTxt = isVolatileDay and isVolatileHour ? "PEAK" : isVolatileDay ? "DAY" : "---"
+    table.cell(dash, 1, 12, sTxt, text_color=isVolatileDay ? #FFD600 : #484F58, text_size=size.tiny)
+
+    // 方向
+    dirTxt = dirScore >= 3 ? "BULL +" + str.tostring(dirScore) : dirScore <= -3 ? "BEAR " + str.tostring(dirScore) : "NEUTRAL"
+    dirCol = dirScore >= 3 ? #00E676 : dirScore <= -3 ? #FF1744 : #8B949E
+    table.cell(dash, 0, 13, "Direction", text_color=#C9D1D9, text_size=size.tiny)
+    table.cell(dash, 1, 13, dirTxt, text_color=dirCol, text_size=size.tiny)
+
+    // HV
+    table.cell(dash, 0, 14, "Hist Vol", text_color=#C9D1D9, text_size=size.tiny)
+    table.cell(dash, 1, 14, str.tostring(hvol, "#.0") + "%", text_color=hvol < hvolSMA * 0.7 ? #FFD600 : #8B949E, text_size=size.tiny)
+
+    // 適応型
+    table.cell(dash, 0, 15, "Adapt Mult", text_color=#C9D1D9, text_size=size.tiny)
+    table.cell(dash, 1, 15, str.tostring(adaptMult, "#.##") + "x", text_color=adaptMult > 1.0 ? #FFD600 : adaptMult < 1.0 ? #29B6F6 : #8B949E, text_size=size.tiny)
