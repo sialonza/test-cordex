@@ -1,75 +1,75 @@
 //@version=5
-indicator("BTC RSI Divergence - Ultra Anti-Fakeout v2", overlay=false,
+indicator("BTC RSI Divergence - Ultra v3", overlay=false,
      max_lines_count=500, max_labels_count=500, max_bars_back=500)
 
 // ============================================================
-//  BTC限定チェック - BTC以外のチャートでは動作しない
+//  BTC限定
 // ============================================================
 isBTC = str.contains(str.upper(syminfo.basecurrency), "BTC") or str.contains(str.upper(syminfo.ticker), "BTC")
 if not isBTC
-    runtime.error("This indicator is designed exclusively for BTC charts. Please apply to a BTC pair (e.g. BTCUSDT, BTCUSD, BTC.D).")
+    runtime.error("BTC専用インジケーターです。BTCチャートに適用してください。")
 
 // ============================================================
-//  パラメータ
+//  入力パラメータ
 // ============================================================
-grp_rsi = "RSI"
-rsiLen     = input.int(14, "RSI Period", minval=2, group=grp_rsi)
-rsiOB      = input.float(65.0, "Overbought Threshold", group=grp_rsi)
-rsiOS      = input.float(35.0, "Oversold Threshold", group=grp_rsi)
+grp1 = "Core"
+rsiLen     = input.int(14, "RSI Period", minval=2, group=grp1)
+swingLB    = input.int(5, "Swing Lookback", minval=2, maxval=20, group=grp1)
+minConf    = input.int(65, "Min Confidence %", minval=0, maxval=100, group=grp1)
 
-grp_swing = "Swing Detection"
-swingLB    = input.int(5, "Pivot Lookback", minval=2, maxval=20, group=grp_swing)
+grp2 = "Anti-Fakeout Filters"
+minRSIDiff = input.float(4.0, "Min RSI Diff (pt)", minval=1, step=0.5, group=grp2)
+minBars    = input.int(6, "Min Bars Between Pivots", minval=2, group=grp2)
+maxBars    = input.int(50, "Max Bars Between Pivots", minval=10, group=grp2)
+atrLen     = input.int(14, "ATR Period", minval=1, group=grp2)
+atrMult    = input.float(0.5, "ATR Price Significance", minval=0.1, step=0.1, group=grp2)
+useMTF     = input.bool(true, "MTF Trend Alignment", group=grp2)
+useMACD    = input.bool(true, "MACD Histogram Confirm", group=grp2)
+useEMA     = input.bool(true, "EMA Trend Filter", group=grp2)
+useStochRSI = input.bool(true, "StochRSI Extreme Confirm", group=grp2)
+useBB      = input.bool(true, "Bollinger Band Touch", group=grp2)
+useOBV     = input.bool(true, "OBV Divergence Confirm", group=grp2)
+useVolFilt = input.bool(true, "Volume Decay Filter", group=grp2)
+useIntFilt = input.bool(true, "Intermediate Reversal Filter", group=grp2)
 
-grp_filt = "Anti-Fakeout Filters"
-minRSIDiff = input.float(3.0, "Min RSI Diff (pt)", step=0.5, group=grp_filt)
-minBars    = input.int(5, "Min Pivot Distance (bars)", group=grp_filt)
-maxBars    = input.int(60, "Max Pivot Distance (bars)", group=grp_filt)
-atrLen     = input.int(14, "ATR Period", group=grp_filt)
-atrMult    = input.float(0.5, "ATR Price Significance", step=0.1, group=grp_filt)
-useVolFilt = input.bool(true, "Volume Decay Filter", group=grp_filt)
-useIntFilt = input.bool(true, "Intermediate Reversal Filter", group=grp_filt)
-useMACDFilt = input.bool(true, "MACD Histogram Confirm", group=grp_filt)
-useEMAFilt  = input.bool(true, "EMA Trend Alignment", group=grp_filt)
-useStochFilt = input.bool(true, "Stoch RSI Cross Confirm", group=grp_filt)
-useBBFilt   = input.bool(true, "Bollinger Band Position", group=grp_filt)
-useMTFFilt  = input.bool(true, "Multi-TF RSI Confirm", group=grp_filt)
-usePostConf = input.bool(true, "Post-Signal Candle Confirm", group=grp_filt)
-minConf    = input.int(65, "Min Confidence %", minval=0, maxval=100, group=grp_filt)
+grp3 = "Visual"
+showRegular = input.bool(true, "Regular Divergence", group=grp3)
+showHidden  = input.bool(true, "Hidden Divergence", group=grp3)
+bullColor   = input.color(color.new(#00E676, 0), "Bullish", group=grp3)
+bearColor   = input.color(color.new(#FF1744, 0), "Bearish", group=grp3)
+showConf    = input.bool(true, "Show Confidence %", group=grp3)
+showFilters = input.bool(false, "Show Filter Details", group=grp3)
 
-grp_vis = "Visual"
-showRegular = input.bool(true, "Regular Divergence", group=grp_vis)
-showHidden  = input.bool(true, "Hidden Divergence", group=grp_vis)
-bullColor   = input.color(color.new(#00C853, 0), "Bullish", group=grp_vis)
-bearColor   = input.color(color.new(#FF1744, 0), "Bearish", group=grp_vis)
-showConf    = input.bool(true, "Show Confidence %", group=grp_vis)
-showFilterTbl = input.bool(true, "Show Filter Dashboard", group=grp_vis)
-
-grp_alert = "Alerts"
-alertMinConf = input.int(75, "Alert Min Confidence %", group=grp_alert)
+grp4 = "Alerts"
+alertMinConf = input.int(75, "Alert Min Confidence %", minval=0, maxval=100, group=grp4)
 
 // ============================================================
-//  コア指標計算
+//  指標計算
 // ============================================================
-rsiVal  = ta.rsi(close, rsiLen)
-atrVal  = ta.atr(atrLen)
+rsiVal = ta.rsi(close, rsiLen)
+atrVal = ta.atr(atrLen)
 
 // MACD
-[macdLine, signalLine, histLine] = ta.macd(close, 12, 26, 9)
+[macdLine, signalLine, macdHist] = ta.macd(close, 12, 26, 9)
 
-// EMA（トレンド判定用）
-ema20   = ta.ema(close, 20)
-ema50   = ta.ema(close, 50)
-ema200  = ta.ema(close, 200)
+// EMA (20/50/200 BTC定番)
+ema20  = ta.ema(close, 20)
+ema50  = ta.ema(close, 50)
+ema200 = ta.ema(close, 200)
 
 // StochRSI
 stochRsiK = ta.sma(ta.stoch(rsiVal, rsiVal, rsiVal, 14), 3)
 stochRsiD = ta.sma(stochRsiK, 3)
 
-// ボリンジャーバンド
-[bbMid, bbUp, bbLow] = ta.bb(close, 20, 2.0)
+// Bollinger Bands
+[bbUpper, bbBasis, bbLower] = ta.bb(close, 20, 2.0)
 
-// 上位足RSI（MTF確認用）
-htfRsi = request.security(syminfo.tickerid, useMTFFilt ? (timeframe.isintraday ? (timeframe.multiplier <= 60 ? "240" : "D") : "W") : timeframe.period, ta.rsi(close, rsiLen), lookahead=barmerge.lookahead_on)
+// OBV
+obv = ta.cum(close > close[1] ? volume : close < close[1] ? -volume : 0)
+obvEma = ta.ema(obv, 20)
+
+// 上位足RSI (MTF)
+rsi_htf = request.security(syminfo.tickerid, useMTF ? (timeframe.isintraday ? (timeframe.multiplier <= 60 ? "240" : "D") : "W") : timeframe.period, ta.rsi(close, 14), lookahead=barmerge.lookahead_off)
 
 // ============================================================
 //  スイングポイント検出
@@ -80,13 +80,12 @@ rsiSwingHigh   = ta.pivothigh(rsiVal, swingLB, swingLB)
 rsiSwingLow    = ta.pivotlow(rsiVal, swingLB, swingLB)
 
 // ============================================================
-//  ピボット履歴（配列）
+//  スイングポイント配列
 // ============================================================
 var float[] priceHighs    = array.new_float()
 var int[]   priceHighBars = array.new_int()
 var float[] rsiHighs      = array.new_float()
 var int[]   rsiHighBars   = array.new_int()
-
 var float[] priceLows     = array.new_float()
 var int[]   priceLowBars  = array.new_int()
 var float[] rsiLows       = array.new_float()
@@ -100,18 +99,21 @@ if not na(swingHighPrice)
     if array.size(priceHighs) > maxPivots
         array.pop(priceHighs)
         array.pop(priceHighBars)
+
 if not na(rsiSwingHigh)
     array.unshift(rsiHighs, rsiSwingHigh)
     array.unshift(rsiHighBars, bar_index - swingLB)
     if array.size(rsiHighs) > maxPivots
         array.pop(rsiHighs)
         array.pop(rsiHighBars)
+
 if not na(swingLowPrice)
     array.unshift(priceLows, swingLowPrice)
     array.unshift(priceLowBars, bar_index - swingLB)
     if array.size(priceLows) > maxPivots
         array.pop(priceLows)
         array.pop(priceLowBars)
+
 if not na(rsiSwingLow)
     array.unshift(rsiLows, rsiSwingLow)
     array.unshift(rsiLowBars, bar_index - swingLB)
@@ -120,449 +122,428 @@ if not na(rsiSwingLow)
         array.pop(rsiLowBars)
 
 // ============================================================
-//  12層フィルター関数
+//  RSIスイングマッチング
+// ============================================================
+f_matchRSI(rsiBarArr, rsiValArr, targetBar, tol) =>
+    bestVal = float(na)
+    bestBar = int(na)
+    bestD   = tol + 1
+    for i = 0 to math.min(array.size(rsiBarArr) - 1, maxPivots - 1)
+        sb = array.get(rsiBarArr, i)
+        d  = math.abs(sb - targetBar)
+        if d <= tol and d < bestD
+            bestVal := array.get(rsiValArr, i)
+            bestBar := sb
+            bestD   := d
+    [bestVal, bestBar]
+
+// ============================================================
+//  12層フィルターシステム
 // ============================================================
 
-// F1: RSI極限ゾーン
-f_rsiZone(rsiA, rsiB, isBear) =>
-    isBear ? (rsiA > rsiOB or rsiB > rsiOB) : (rsiA < rsiOS or rsiB < rsiOS)
-
-// F2: ピボット間距離
-f_distance(barA, barB) =>
-    d = math.abs(barB - barA)
+// F1: 距離
+f_dist(bA, bB) =>
+    d = math.abs(bB - bA)
     d >= minBars and d <= maxBars
 
-// F3: RSI差分有意性
-f_rsiSig(rsiA, rsiB) =>
-    math.abs(rsiA - rsiB) >= minRSIDiff
+// F2: RSI差分有意性
+f_rsiSig(rA, rB) =>
+    math.abs(rA - rB) >= minRSIDiff
 
-// F4: 価格ATR有意性
-f_priceSig(priceA, priceB) =>
-    na(atrVal) ? true : math.abs(priceA - priceB) > atrVal * atrMult
+// F3: 価格ATR有意性
+f_priceSig(pA, pB) =>
+    na(atrVal) ? true : math.abs(pA - pB) > atrVal * atrMult
 
-// F5: 出来高減衰確認
-f_volDecay(barA, barB) =>
+// F4: RSI極限ゾーン (弱気→OB圏、強気→OS圏にいること)
+f_rsiZone(rA, rB, isBear) =>
+    isBear ? (rA > 60 or rB > 60) : (rA < 40 or rB < 40)
+
+// F5: 出来高減衰（勢い喪失の裏付け）
+f_volDecay(bA, bB) =>
     if not useVolFilt
         true
     else
-        offA = bar_index - barA
-        offB = bar_index - barB
-        volA = offA >= 0 and offA < 500 ? volume[offA] : na
-        volB = offB >= 0 and offB < 500 ? volume[offB] : na
-        na(volA) or na(volB) ? true : volB < volA * 1.2
+        offA = bar_index - bA
+        offB = bar_index - bB
+        offA >= 0 and offB >= 0 and offA < 500 and offB < 500 ? volume[offB] < volume[offA] * 1.5 : true
 
 // F6: 中間反転なし
-f_noIntermediate(barA, barB, rsiA, rsiB, isBear) =>
+f_noMidRev(bA, bB, rA, rB, isBear) =>
     if not useIntFilt
         true
     else
-        clean = true
-        lo = math.min(barA, barB)
-        hi = math.max(barA, barB)
+        ok = true
+        lo = math.min(bA, bB)
+        hi = math.max(bA, bB)
         for i = lo + 1 to hi - 1
             off = bar_index - i
             if off >= 0 and off < 500
                 rv = rsiVal[off]
                 if not na(rv)
-                    if isBear and rv > math.max(rsiA, rsiB) + 2
-                        clean := false
+                    if isBear and rv > math.max(rA, rB) + 3
+                        ok := false
                         break
-                    if not isBear and rv < math.min(rsiA, rsiB) - 2
-                        clean := false
+                    if not isBear and rv < math.min(rA, rB) - 3
+                        ok := false
                         break
-        clean
+        ok
 
-// F7: MACDヒストグラム勢い確認
-f_macdConfirm(barB, isBear) =>
-    if not useMACDFilt
+// F7: MACD ヒストグラム確認（モメンタム減衰の二重確認）
+f_macdConfirm(bB, isBear) =>
+    if not useMACD
         true
     else
-        off = bar_index - barB
+        off = bar_index - bB
         if off >= 1 and off < 499
-            h0 = histLine[off]
-            h1 = histLine[off + 1]
-            if na(h0) or na(h1)
-                true
+            if isBear
+                // 弱気: MACDヒストグラムが縮小中 or マイナス転換
+                macdHist[off] < macdHist[off + 1] or macdHist[off] < 0
             else
-                // 弱気Div: ヒストグラムが減少傾向（勢い喪失）
-                isBear ? h0 < h1 : h0 > h1
+                // 強気: MACDヒストグラムが拡大中 or プラス転換
+                macdHist[off] > macdHist[off + 1] or macdHist[off] > 0
         else
             true
 
 // F8: EMAトレンド整合性
-f_emaAlign(barB, isBear) =>
-    if not useEMAFilt
+f_emaAlign(bB, isBear) =>
+    if not useEMA
         true
     else
-        off = bar_index - barB
+        off = bar_index - bB
         if off >= 0 and off < 500
             c = close[off]
             e20 = ema20[off]
             e50 = ema50[off]
-            if na(c) or na(e20) or na(e50)
-                true
+            if isBear
+                // 弱気ダイバ: 価格がEMA20より上にいる（まだ高い位置=反転余地あり）
+                na(e20) ? true : c > e20 * 0.995
             else
-                // 弱気Div: 価格がEMA20の上にある（過熱位置からの反転を期待）
-                // 強気Div: 価格がEMA20の下にある（売られすぎ位置からの反転を期待）
-                isBear ? c > e20 : c < e20
+                // 強気ダイバ: 価格がEMA20より下にいる（まだ低い位置=反転余地あり）
+                na(e20) ? true : c < e20 * 1.005
         else
             true
 
-// F9: StochRSIクロス確認
-f_stochConfirm(barB, isBear) =>
-    if not useStochFilt
+// F9: StochRSI極限確認
+f_stochConfirm(bB, isBear) =>
+    if not useStochRSI
         true
     else
-        off = bar_index - barB
-        if off >= 1 and off < 499
-            k0 = stochRsiK[off]
-            d0 = stochRsiD[off]
-            k1 = stochRsiK[off + 1]
-            d1 = stochRsiD[off + 1]
-            if na(k0) or na(d0) or na(k1) or na(d1)
-                true
-            else
-                // 弱気: K線がD線を下抜け、または80超からの下降
-                // 強気: K線がD線を上抜け、または20割れからの上昇
-                if isBear
-                    (k0 < d0 and k1 >= d1) or k0 > 75
-                else
-                    (k0 > d0 and k1 <= d1) or k0 < 25
-        else
-            true
-
-// F10: ボリンジャーバンド位置
-f_bbPosition(barB, isBear) =>
-    if not useBBFilt
-        true
-    else
-        off = bar_index - barB
+        off = bar_index - bB
         if off >= 0 and off < 500
-            c = close[off]
-            bu = bbUp[off]
-            bl = bbLow[off]
-            bm = bbMid[off]
-            if na(c) or na(bu) or na(bl)
-                true
+            sk = stochRsiK[off]
+            if isBear
+                na(sk) ? true : sk > 70
             else
-                // 弱気Div: 価格がBB上部（ミッド〜上バンド）
-                // 強気Div: 価格がBB下部（下バンド〜ミッド）
-                isBear ? c > bm : c < bm
+                na(sk) ? true : sk < 30
         else
             true
 
-// F11: 上位足RSI方向確認
-f_mtfConfirm(isBear) =>
-    if not useMTFFilt
+// F10: ボリンジャーバンドタッチ
+f_bbTouch(bB, isBear) =>
+    if not useBB
         true
     else
-        if na(htfRsi)
-            true
+        off = bar_index - bB
+        if off >= 0 and off < 500
+            h = high[off]
+            l = low[off]
+            bu = bbUpper[off]
+            bl = bbLower[off]
+            if isBear
+                na(bu) ? true : h >= bu * 0.998
+            else
+                na(bl) ? true : l <= bl * 1.002
         else
-            // 弱気Div: 上位足RSIも高め（55以上）で過熱圏
-            // 強気Div: 上位足RSIも低め（45以下）で売られすぎ圏
-            isBear ? htfRsi > 50 : htfRsi < 50
+            true
 
-// F12: シグナル後の足確認（ポストコンファメーション）
-f_postConfirm(barB, isBear) =>
-    if not usePostConf
+// F11: OBV乖離確認
+f_obvConfirm(bA, bB, isBear) =>
+    if not useOBV
         true
     else
-        off = bar_index - barB
-        // ポイントBの後に少なくとも1本確定足があるか
-        if off >= 2
-            c0 = close[off - 1]  // ポイントBの次の足
-            c1 = close[off]      // ポイントBの足
-            if na(c0) or na(c1)
+        offA = bar_index - bA
+        offB = bar_index - bB
+        if offA >= 0 and offB >= 0 and offA < 500 and offB < 500
+            obvA = obv[offA]
+            obvB = obv[offB]
+            if na(obvA) or na(obvB)
                 true
             else
-                // 弱気: 次の足が下落方向
-                // 強気: 次の足が上昇方向
-                isBear ? c0 < c1 : c0 > c1
+                if isBear
+                    // 弱気: 価格は上がったがOBVは伸びていない
+                    obvB <= obvA * 1.05
+                else
+                    // 強気: 価格は下がったがOBVは減っていない
+                    obvB >= obvA * 0.95
         else
-            true  // まだ確定足がなければ一旦通す
+            true
+
+// F12: 上位足RSIトレンド整合性（MTF）
+f_mtfAlign(isBear) =>
+    if not useMTF
+        true
+    else
+        if na(rsi_htf)
+            true
+        else
+            if isBear
+                // 弱気: 上位足RSIも過熱圏に近い or 下降中
+                rsi_htf > 55
+            else
+                // 強気: 上位足RSIも売られすぎ圏に近い or 上昇中
+                rsi_htf < 45
 
 // ============================================================
-//  全フィルター統合チェック
+//  信頼度スコア（12要素加重 / 150点満点→100%正規化）
 // ============================================================
-f_allFilters(barA, barB, rsiA, rsiB, priceA, priceB, isBear, isHidden) =>
-    pass_rsiZone     = isHidden ? true : f_rsiZone(rsiA, rsiB, isBear)
-    pass_dist        = f_distance(barA, barB)
-    pass_rsiSig      = f_rsiSig(rsiA, rsiB)
-    pass_priceSig    = f_priceSig(priceA, priceB)
-    pass_vol         = f_volDecay(barA, barB)
-    pass_noInt       = f_noIntermediate(barA, barB, rsiA, rsiB, isBear)
-    pass_macd        = f_macdConfirm(barB, isBear)
-    pass_ema         = f_emaAlign(barB, isBear)
-    pass_stoch       = f_stochConfirm(barB, isBear)
-    pass_bb          = f_bbPosition(barB, isBear)
-    pass_mtf         = f_mtfConfirm(isBear)
-    pass_post        = f_postConfirm(barB, isBear)
+f_confidence(rA, rB, pA, pB, bA, bB, isBear) =>
+    s = 0.0
 
-    allPass = pass_rsiZone and pass_dist and pass_rsiSig and pass_priceSig and pass_vol and pass_noInt and pass_macd and pass_ema and pass_stoch and pass_bb and pass_mtf and pass_post
+    // (1) RSI乖離度 max20
+    s += math.min(20.0, math.abs(rA - rB) * 2.0)
 
-    filterCount = 0
-    filterCount += pass_rsiZone ? 1 : 0
-    filterCount += pass_dist ? 1 : 0
-    filterCount += pass_rsiSig ? 1 : 0
-    filterCount += pass_priceSig ? 1 : 0
-    filterCount += pass_vol ? 1 : 0
-    filterCount += pass_noInt ? 1 : 0
-    filterCount += pass_macd ? 1 : 0
-    filterCount += pass_ema ? 1 : 0
-    filterCount += pass_stoch ? 1 : 0
-    filterCount += pass_bb ? 1 : 0
-    filterCount += pass_mtf ? 1 : 0
-    filterCount += pass_post ? 1 : 0
-
-    [allPass, filterCount]
-
-// ============================================================
-//  信頼度スコア（10要素, max 100）
-// ============================================================
-f_confidence(rsiA, rsiB, priceA, priceB, barA, barB, isBear, filtersPassed) =>
-    score = 0.0
-
-    // (1) RSI乖離度 max 15
-    score += math.min(15.0, math.abs(rsiA - rsiB) * 1.5)
-
-    // (2) RSI極限度 max 12
+    // (2) RSI極限深度 max15
     if isBear
-        mx = math.max(rsiA, rsiB)
-        score += mx > 78 ? 12.0 : mx > 73 ? 10.0 : mx > 68 ? 7.0 : mx > 63 ? 4.0 : 2.0
+        mx = math.max(rA, rB)
+        s += mx > 78 ? 15.0 : mx > 73 ? 12.0 : mx > 68 ? 9.0 : mx > 63 ? 6.0 : 3.0
     else
-        mn = math.min(rsiA, rsiB)
-        score += mn < 22 ? 12.0 : mn < 27 ? 10.0 : mn < 32 ? 7.0 : mn < 37 ? 4.0 : 2.0
+        mn = math.min(rA, rB)
+        s += mn < 22 ? 15.0 : mn < 27 ? 12.0 : mn < 32 ? 9.0 : mn < 37 ? 6.0 : 3.0
 
-    // (3) 価格ATR比 max 10
+    // (3) 価格ATR比 max12
     if not na(atrVal) and atrVal > 0
-        score += math.min(10.0, math.abs(priceA - priceB) / atrVal * 3.0)
+        s += math.min(12.0, math.abs(pA - pB) / atrVal * 3.0)
 
-    // (4) 距離適正度 max 8
-    dist = math.abs(barB - barA)
-    score += dist >= 10 and dist <= 25 ? 8.0 : dist >= 7 and dist <= 35 ? 6.0 : 3.0
+    // (4) 距離適正度 max10
+    dist = math.abs(bB - bA)
+    s += dist >= 10 and dist <= 30 ? 10.0 : dist >= 7 and dist <= 40 ? 7.0 : 4.0
 
-    // (5) 出来高裏付け max 10
-    offA = bar_index - barA
-    offB = bar_index - barB
-    volA = offA >= 0 and offA < 500 ? volume[offA] : na
-    volB = offB >= 0 and offB < 500 ? volume[offB] : na
-    if not na(volA) and not na(volB) and volA > 0
-        vR = volB / volA
-        score += vR < 0.6 ? 10.0 : vR < 0.8 ? 8.0 : vR < 1.0 ? 6.0 : 3.0
-    else
-        score += 5.0
+    // (5) 出来高裏付け max12
+    offA = bar_index - bA
+    offB = bar_index - bB
+    if offA >= 0 and offB >= 0 and offA < 500 and offB < 500
+        vA = volume[offA]
+        vB = volume[offB]
+        if not na(vA) and not na(vB) and vA > 0
+            vR = vB / vA
+            s += vR < 0.6 ? 12.0 : vR < 0.8 ? 9.0 : vR < 1.0 ? 6.0 : 3.0
 
-    // (6) MACDヒストグラム勾配 max 10
-    if offB >= 2 and offB < 498
-        h0 = histLine[offB]
-        h1 = histLine[offB + 1]
-        h2 = histLine[offB + 2]
-        if not na(h0) and not na(h1) and not na(h2)
-            gradOK = isBear ? (h0 < h1 and h1 < h2) : (h0 > h1 and h1 > h2)
-            score += gradOK ? 10.0 : 4.0
+    // (6) MACD確認 max10
+    if useMACD and f_macdConfirm(bB, isBear)
+        s += 10.0
 
-    // (7) EMA構造スコア max 8
-    if offB >= 0 and offB < 500
-        c_ = close[offB]
-        e20_ = ema20[offB]
-        e50_ = ema50[offB]
-        e200_ = ema200[offB]
-        if not na(c_) and not na(e20_) and not na(e50_) and not na(e200_)
-            if isBear
-                score += c_ > e20_ and e20_ > e50_ ? 8.0 : c_ > e20_ ? 5.0 : 2.0
-            else
-                score += c_ < e20_ and e20_ < e50_ ? 8.0 : c_ < e20_ ? 5.0 : 2.0
+    // (7) EMA整合 max8
+    if useEMA and f_emaAlign(bB, isBear)
+        s += 8.0
 
-    // (8) StochRSI位置スコア max 7
-    if offB >= 0 and offB < 500
-        sk = stochRsiK[offB]
-        if not na(sk)
-            if isBear
-                score += sk > 80 ? 7.0 : sk > 65 ? 5.0 : 2.0
-            else
-                score += sk < 20 ? 7.0 : sk < 35 ? 5.0 : 2.0
+    // (8) StochRSI確認 max10
+    if useStochRSI and f_stochConfirm(bB, isBear)
+        s += 10.0
 
-    // (9) 上位足RSI合致スコア max 10
-    if not na(htfRsi)
-        if isBear
-            score += htfRsi > 65 ? 10.0 : htfRsi > 55 ? 7.0 : htfRsi > 50 ? 4.0 : 1.0
-        else
-            score += htfRsi < 35 ? 10.0 : htfRsi < 45 ? 7.0 : htfRsi < 50 ? 4.0 : 1.0
+    // (9) BB タッチ max8
+    if useBB and f_bbTouch(bB, isBear)
+        s += 8.0
 
-    // (10) フィルター通過数ボーナス max 10
-    score += math.min(10.0, filtersPassed * 0.83)
+    // (10) OBV確認 max10
+    if useOBV and f_obvConfirm(bA, bB, isBear)
+        s += 10.0
 
-    math.min(100.0, math.round(score))
+    // (11) MTF整合 max15
+    if useMTF and f_mtfAlign(isBear)
+        s += 15.0
+
+    // (12) 中間反転なしボーナス max10
+    if f_noMidRev(bA, bB, rA, rB, isBear)
+        s += 10.0
+
+    // 正規化 (150点満点→100%)
+    math.min(100.0, math.round(s / 1.4))
 
 // ============================================================
-//  RSIスイングマッチング
+//  フィルター通過数カウント（表示用）
 // ============================================================
-f_matchRSI(rsiBarArr, rsiValArr, targetBar, tol) =>
-    bv = float(na)
-    bb = int(na)
-    bd = tol + 1
-    for i = 0 to math.min(array.size(rsiBarArr) - 1, maxPivots - 1)
-        sb = array.get(rsiBarArr, i)
-        d = math.abs(sb - targetBar)
-        if d <= tol and d < bd
-            bv := array.get(rsiValArr, i)
-            bb := sb
-            bd := d
-    [bv, bb]
+f_filterCount(rA, rB, pA, pB, bA, bB, isBear) =>
+    n = 0
+    if f_dist(bA, bB)
+        n += 1
+    if f_rsiSig(rA, rB)
+        n += 1
+    if f_priceSig(pA, pB)
+        n += 1
+    if f_rsiZone(rA, rB, isBear)
+        n += 1
+    if f_volDecay(bA, bB)
+        n += 1
+    if f_noMidRev(bA, bB, rA, rB, isBear)
+        n += 1
+    if f_macdConfirm(bB, isBear)
+        n += 1
+    if f_emaAlign(bB, isBear)
+        n += 1
+    if f_stochConfirm(bB, isBear)
+        n += 1
+    if f_bbTouch(bB, isBear)
+        n += 1
+    if f_obvConfirm(bA, bB, isBear)
+        n += 1
+    if f_mtfAlign(isBear)
+        n += 1
+    n
 
 // ============================================================
-//  検出状態
+//  全フィルター一括チェック（必須6層 全通過必須）
 // ============================================================
-var int   lastBullBar  = 0
-var int   lastBearBar  = 0
-var float lastBullConf = 0.0
-var float lastBearConf = 0.0
-
-// 重複防止（同じバーで複数出さない）
-cooldown = 3
+f_passAllFilters(rA, rB, pA, pB, bA, bB, isBear) =>
+    f_dist(bA, bB) and f_rsiSig(rA, rB) and f_priceSig(pA, pB) and f_rsiZone(rA, rB, isBear) and f_noMidRev(bA, bB, rA, rB, isBear) and f_volDecay(bA, bB)
 
 // ============================================================
-//  Regular Bearish Divergence（価格HH + RSI LH）
+//  メイン検出 - Regular Bearish
 // ============================================================
 if not na(swingHighPrice) and array.size(priceHighs) >= 2 and showRegular
-    cP = swingHighPrice
-    cB = bar_index - swingLB
-    [cR, _cr] = f_matchRSI(rsiHighBars, rsiHighs, cB, 3)
-    if not na(cR) and (bar_index - lastBearBar) > cooldown
+    curP = swingHighPrice
+    curB = bar_index - swingLB
+    [curR, _crb] = f_matchRSI(rsiHighBars, rsiHighs, curB, 3)
+
+    if not na(curR)
         for i = 1 to math.min(array.size(priceHighs) - 1, 6)
-            pP = array.get(priceHighs, i)
-            pB = array.get(priceHighBars, i)
-            [pR, _pr] = f_matchRSI(rsiHighBars, rsiHighs, pB, 3)
-            if not na(pR)
-                if cP > pP and cR < pR
-                    [ok, fc] = f_allFilters(pB, cB, pR, cR, pP, cP, true, false)
-                    if ok
-                        conf = f_confidence(pR, cR, pP, cP, pB, cB, true, fc)
-                        if conf >= minConf
-                            line.new(pB, pR, cB, cR, color=bearColor, width=2, style=line.style_dashed)
-                            lbl = showConf ? "BEAR " + str.tostring(conf) + "%" : "BEAR"
-                            label.new(cB, cR + 3, lbl, color=bearColor, textcolor=color.white, size=size.small, style=label.style_label_down)
-                            lastBearBar  := bar_index
-                            lastBearConf := conf
-                            if conf >= alertMinConf
-                                alert("BEARISH DIV | Conf:" + str.tostring(conf) + "% | 12/12 Filters PASS | " + syminfo.ticker, alert.freq_once_per_bar_close)
-                            break
+            prevP = array.get(priceHighs, i)
+            prevB = array.get(priceHighBars, i)
+            [prevR, _prb] = f_matchRSI(rsiHighBars, rsiHighs, prevB, 3)
+
+            if not na(prevR) and curP > prevP and curR < prevR
+                if f_passAllFilters(prevR, curR, prevP, curP, prevB, curB, true)
+                    conf = f_confidence(prevR, curR, prevP, curP, prevB, curB, true)
+                    if conf >= minConf
+                        line.new(prevB, prevR, curB, curR, color=bearColor, width=2, style=line.style_dashed)
+                        fc = f_filterCount(prevR, curR, prevP, curP, prevB, curB, true)
+                        lbl = "BEAR " + str.tostring(conf) + "%" + (showFilters ? " [" + str.tostring(fc) + "/12]" : "")
+                        label.new(curB, curR + 3, lbl, color=bearColor, textcolor=color.white, size=size.small, style=label.style_label_down)
+                        if conf >= alertMinConf
+                            alert("BTC BEARISH DIV " + str.tostring(conf) + "% | " + str.tostring(fc) + "/12 filters | " + syminfo.ticker + " " + timeframe.period, alert.freq_once_per_bar_close)
+                        break
 
 // ============================================================
-//  Regular Bullish Divergence（価格LL + RSI HL）
+//  メイン検出 - Regular Bullish
 // ============================================================
 if not na(swingLowPrice) and array.size(priceLows) >= 2 and showRegular
-    cP = swingLowPrice
-    cB = bar_index - swingLB
-    [cR, _cr] = f_matchRSI(rsiLowBars, rsiLows, cB, 3)
-    if not na(cR) and (bar_index - lastBullBar) > cooldown
+    curP = swingLowPrice
+    curB = bar_index - swingLB
+    [curR, _crb] = f_matchRSI(rsiLowBars, rsiLows, curB, 3)
+
+    if not na(curR)
         for i = 1 to math.min(array.size(priceLows) - 1, 6)
-            pP = array.get(priceLows, i)
-            pB = array.get(priceLowBars, i)
-            [pR, _pr] = f_matchRSI(rsiLowBars, rsiLows, pB, 3)
-            if not na(pR)
-                if cP < pP and cR > pR
-                    [ok, fc] = f_allFilters(pB, cB, pR, cR, pP, cP, false, false)
-                    if ok
-                        conf = f_confidence(pR, cR, pP, cP, pB, cB, false, fc)
-                        if conf >= minConf
-                            line.new(pB, pR, cB, cR, color=bullColor, width=2, style=line.style_dashed)
-                            lbl = showConf ? "BULL " + str.tostring(conf) + "%" : "BULL"
-                            label.new(cB, cR - 3, lbl, color=bullColor, textcolor=color.white, size=size.small, style=label.style_label_up)
-                            lastBullBar  := bar_index
-                            lastBullConf := conf
-                            if conf >= alertMinConf
-                                alert("BULLISH DIV | Conf:" + str.tostring(conf) + "% | 12/12 Filters PASS | " + syminfo.ticker, alert.freq_once_per_bar_close)
-                            break
+            prevP = array.get(priceLows, i)
+            prevB = array.get(priceLowBars, i)
+            [prevR, _prb] = f_matchRSI(rsiLowBars, rsiLows, prevB, 3)
+
+            if not na(prevR) and curP < prevP and curR > prevR
+                if f_passAllFilters(prevR, curR, prevP, curP, prevB, curB, false)
+                    conf = f_confidence(prevR, curR, prevP, curP, prevB, curB, false)
+                    if conf >= minConf
+                        line.new(prevB, prevR, curB, curR, color=bullColor, width=2, style=line.style_dashed)
+                        fc = f_filterCount(prevR, curR, prevP, curP, prevB, curB, false)
+                        lbl = "BULL " + str.tostring(conf) + "%" + (showFilters ? " [" + str.tostring(fc) + "/12]" : "")
+                        label.new(curB, curR - 3, lbl, color=bullColor, textcolor=color.white, size=size.small, style=label.style_label_up)
+                        if conf >= alertMinConf
+                            alert("BTC BULLISH DIV " + str.tostring(conf) + "% | " + str.tostring(fc) + "/12 filters | " + syminfo.ticker + " " + timeframe.period, alert.freq_once_per_bar_close)
+                        break
 
 // ============================================================
-//  Hidden Bearish（価格LH + RSI HH → 下落トレンド継続）
+//  Hidden Bearish
 // ============================================================
 if not na(swingHighPrice) and array.size(priceHighs) >= 2 and showHidden
-    cP = swingHighPrice
-    cB = bar_index - swingLB
-    [cR, _cr] = f_matchRSI(rsiHighBars, rsiHighs, cB, 3)
-    if not na(cR) and (bar_index - lastBearBar) > cooldown
+    curP = swingHighPrice
+    curB = bar_index - swingLB
+    [curR, _crb] = f_matchRSI(rsiHighBars, rsiHighs, curB, 3)
+
+    if not na(curR)
         for i = 1 to math.min(array.size(priceHighs) - 1, 6)
-            pP = array.get(priceHighs, i)
-            pB = array.get(priceHighBars, i)
-            [pR, _pr] = f_matchRSI(rsiHighBars, rsiHighs, pB, 3)
-            if not na(pR)
-                if cP < pP and cR > pR
-                    [ok, fc] = f_allFilters(pB, cB, pR, cR, pP, cP, true, true)
-                    if ok
-                        conf = f_confidence(pR, cR, pP, cP, pB, cB, true, fc)
-                        if conf >= math.max(minConf, 70)
-                            line.new(pB, pR, cB, cR, color=color.new(bearColor, 30), width=1, style=line.style_dotted)
-                            lbl = showConf ? "H.BEAR " + str.tostring(conf) + "%" : "H.BEAR"
-                            label.new(cB, cR + 3, lbl, color=color.new(bearColor, 30), textcolor=color.white, size=size.tiny, style=label.style_label_down)
-                            lastBearBar := bar_index
-                            if conf >= alertMinConf
-                                alert("HIDDEN BEAR | Conf:" + str.tostring(conf) + "% | " + syminfo.ticker, alert.freq_once_per_bar_close)
-                            break
+            prevP = array.get(priceHighs, i)
+            prevB = array.get(priceHighBars, i)
+            [prevR, _prb] = f_matchRSI(rsiHighBars, rsiHighs, prevB, 3)
+
+            if not na(prevR) and curP < prevP and curR > prevR
+                if f_dist(prevB, curB) and f_rsiSig(prevR, curR) and f_priceSig(prevP, curP) and f_noMidRev(prevB, curB, prevR, curR, true)
+                    conf = f_confidence(prevR, curR, prevP, curP, prevB, curB, true)
+                    if conf >= math.max(minConf, 70)
+                        line.new(prevB, prevR, curB, curR, color=color.new(bearColor, 30), width=1, style=line.style_dotted)
+                        fc = f_filterCount(prevR, curR, prevP, curP, prevB, curB, true)
+                        lbl = "H.BEAR " + str.tostring(conf) + "%" + (showFilters ? " [" + str.tostring(fc) + "/12]" : "")
+                        label.new(curB, curR + 2, lbl, color=color.new(bearColor, 30), textcolor=color.white, size=size.tiny, style=label.style_label_down)
+                        if conf >= alertMinConf
+                            alert("BTC HIDDEN BEAR " + str.tostring(conf) + "% | " + syminfo.ticker + " " + timeframe.period, alert.freq_once_per_bar_close)
+                        break
 
 // ============================================================
-//  Hidden Bullish（価格HL + RSI LL → 上昇トレンド継続）
+//  Hidden Bullish
 // ============================================================
 if not na(swingLowPrice) and array.size(priceLows) >= 2 and showHidden
-    cP = swingLowPrice
-    cB = bar_index - swingLB
-    [cR, _cr] = f_matchRSI(rsiLowBars, rsiLows, cB, 3)
-    if not na(cR) and (bar_index - lastBullBar) > cooldown
+    curP = swingLowPrice
+    curB = bar_index - swingLB
+    [curR, _crb] = f_matchRSI(rsiLowBars, rsiLows, curB, 3)
+
+    if not na(curR)
         for i = 1 to math.min(array.size(priceLows) - 1, 6)
-            pP = array.get(priceLows, i)
-            pB = array.get(priceLowBars, i)
-            [pR, _pr] = f_matchRSI(rsiLowBars, rsiLows, pB, 3)
-            if not na(pR)
-                if cP > pP and cR < pR
-                    [ok, fc] = f_allFilters(pB, cB, pR, cR, pP, cP, false, true)
-                    if ok
-                        conf = f_confidence(pR, cR, pP, cP, pB, cB, false, fc)
-                        if conf >= math.max(minConf, 70)
-                            line.new(pB, pR, cB, cR, color=color.new(bullColor, 30), width=1, style=line.style_dotted)
-                            lbl = showConf ? "H.BULL " + str.tostring(conf) + "%" : "H.BULL"
-                            label.new(cB, cR - 3, lbl, color=color.new(bullColor, 30), textcolor=color.white, size=size.tiny, style=label.style_label_up)
-                            lastBullBar := bar_index
-                            if conf >= alertMinConf
-                                alert("HIDDEN BULL | Conf:" + str.tostring(conf) + "% | " + syminfo.ticker, alert.freq_once_per_bar_close)
-                            break
+            prevP = array.get(priceLows, i)
+            prevB = array.get(priceLowBars, i)
+            [prevR, _prb] = f_matchRSI(rsiLowBars, rsiLows, prevB, 3)
+
+            if not na(prevR) and curP > prevP and curR < prevR
+                if f_dist(prevB, curB) and f_rsiSig(prevR, curR) and f_priceSig(prevP, curP) and f_noMidRev(prevB, curB, prevR, curR, false)
+                    conf = f_confidence(prevR, curR, prevP, curP, prevB, curB, false)
+                    if conf >= math.max(minConf, 70)
+                        line.new(prevB, prevR, curB, curR, color=color.new(bullColor, 30), width=1, style=line.style_dotted)
+                        fc = f_filterCount(prevR, curR, prevP, curP, prevB, curB, false)
+                        lbl = "H.BULL " + str.tostring(conf) + "%" + (showFilters ? " [" + str.tostring(fc) + "/12]" : "")
+                        label.new(curB, curR - 2, lbl, color=color.new(bullColor, 30), textcolor=color.white, size=size.tiny, style=label.style_label_up)
+                        if conf >= alertMinConf
+                            alert("BTC HIDDEN BULL " + str.tostring(conf) + "% | " + syminfo.ticker + " " + timeframe.period, alert.freq_once_per_bar_close)
+                        break
 
 // ============================================================
 //  RSI描画
 // ============================================================
-plot(rsiVal, "RSI", color=#A371F7, linewidth=2)
-plot(stochRsiK, "StochRSI K", color=color.new(#58A6FF, 60), linewidth=1, display=display.none)
-plot(stochRsiD, "StochRSI D", color=color.new(#F0883E, 60), linewidth=1, display=display.none)
-
-h70 = hline(70, "OB", color=color.new(#F85149, 60), linestyle=hline.style_dashed)
-h30 = hline(30, "OS", color=color.new(#3FB950, 60), linestyle=hline.style_dashed)
+rsiPlot = plot(rsiVal, "RSI", color=#A371F7, linewidth=2)
+h70 = hline(70, "OB", color=color.new(#FF1744, 50), linestyle=hline.style_dashed)
+h30 = hline(30, "OS", color=color.new(#00E676, 50), linestyle=hline.style_dashed)
 hline(50, "Mid", color=color.new(#484F58, 70), linestyle=hline.style_dotted)
 fill(h70, h30, color=color.new(#A371F7, 95), title="RSI Range")
 
-bgcolor(rsiVal > 70 ? color.new(#F85149, 92) : na, title="OB Zone")
-bgcolor(rsiVal < 30 ? color.new(#3FB950, 92) : na, title="OS Zone")
+// ゾーン背景
+bgcolor(rsiVal > 75 ? color.new(#FF1744, 85) : rsiVal > 70 ? color.new(#FF1744, 92) : na, title="OB Zone")
+bgcolor(rsiVal < 25 ? color.new(#00E676, 85) : rsiVal < 30 ? color.new(#00E676, 92) : na, title="OS Zone")
+
+// StochRSI サブプロット
+plot(useStochRSI ? stochRsiK : na, "StochRSI K", color=color.new(#FFD600, 50), linewidth=1)
+plot(useStochRSI ? stochRsiD : na, "StochRSI D", color=color.new(#FF6D00, 50), linewidth=1)
 
 // ============================================================
-//  フィルターダッシュボード（テーブル）
+//  ダッシュボード（右上テーブル）
 // ============================================================
-if showFilterTbl and barstate.islast
-    var table dash = table.new(position.top_right, 2, 14, bgcolor=color.new(#0D1117, 10), border_color=color.new(#21262D, 0), border_width=1)
+var table dash = table.new(position.top_right, 2, 8, bgcolor=color.new(#0D1117, 10), border_width=1, border_color=color.new(#30363D, 0))
 
-    table.cell(dash, 0, 0, "FILTER", text_color=#8B949E, text_size=size.tiny, text_halign=text.align_left)
-    table.cell(dash, 1, 0, "STATUS", text_color=#8B949E, text_size=size.tiny, text_halign=text.align_center)
+if barstate.islast
+    table.cell(dash, 0, 0, "Filter", text_color=#8B949E, text_size=size.tiny)
+    table.cell(dash, 1, 0, "Status", text_color=#8B949E, text_size=size.tiny)
 
-    filters = array.from("F1 RSI Zone", "F2 Distance", "F3 RSI Diff", "F4 ATR Sig", "F5 Vol Decay", "F6 No Reversal", "F7 MACD Hist", "F8 EMA Align", "F9 StochRSI", "F10 BB Pos", "F11 MTF RSI", "F12 Post Candle")
-    enabled = array.from(true, true, true, true, useVolFilt, useIntFilt, useMACDFilt, useEMAFilt, useStochFilt, useBBFilt, useMTFFilt, usePostConf)
+    table.cell(dash, 0, 1, "RSI", text_color=#C9D1D9, text_size=size.tiny)
+    table.cell(dash, 1, 1, str.tostring(rsiVal, "#.0"), text_color=rsiVal > 70 ? #FF1744 : rsiVal < 30 ? #00E676 : #C9D1D9, text_size=size.tiny)
 
-    for i = 0 to 11
-        nm = array.get(filters, i)
-        en = array.get(enabled, i)
-        table.cell(dash, 0, i + 1, nm, text_color=#C9D1D9, text_size=size.tiny, text_halign=text.align_left)
-        table.cell(dash, 1, i + 1, en ? "ON" : "OFF", text_color=en ? #3FB950 : #484F58, text_size=size.tiny, text_halign=text.align_center)
+    table.cell(dash, 0, 2, "StochRSI", text_color=#C9D1D9, text_size=size.tiny)
+    table.cell(dash, 1, 2, str.tostring(stochRsiK, "#.0"), text_color=stochRsiK > 80 ? #FF1744 : stochRsiK < 20 ? #00E676 : #C9D1D9, text_size=size.tiny)
 
-    // 最新シグナル情報
-    table.cell(dash, 0, 13, "Last Signal", text_color=#8B949E, text_size=size.tiny, text_halign=text.align_left)
-    lastInfo = lastBullConf > 0 or lastBearConf > 0 ? (lastBearConf >= lastBullConf ? "BEAR " + str.tostring(lastBearConf) + "%" : "BULL " + str.tostring(lastBullConf) + "%") : "None"
-    lastCol = lastBearConf >= lastBullConf and lastBearConf > 0 ? bearColor : lastBullConf > 0 ? bullColor : color.gray
-    table.cell(dash, 1, 13, lastInfo, text_color=lastCol, text_size=size.tiny, text_halign=text.align_center)
+    table.cell(dash, 0, 3, "MACD Hist", text_color=#C9D1D9, text_size=size.tiny)
+    table.cell(dash, 1, 3, str.tostring(macdHist, "#.0"), text_color=macdHist > 0 ? #00E676 : #FF1744, text_size=size.tiny)
+
+    table.cell(dash, 0, 4, "HTF RSI", text_color=#C9D1D9, text_size=size.tiny)
+    table.cell(dash, 1, 4, str.tostring(rsi_htf, "#.0"), text_color=rsi_htf > 60 ? #FF1744 : rsi_htf < 40 ? #00E676 : #C9D1D9, text_size=size.tiny)
+
+    table.cell(dash, 0, 5, "EMA20", text_color=#C9D1D9, text_size=size.tiny)
+    table.cell(dash, 1, 5, close > ema20 ? "Above" : "Below", text_color=close > ema20 ? #00E676 : #FF1744, text_size=size.tiny)
+
+    table.cell(dash, 0, 6, "BB Pos", text_color=#C9D1D9, text_size=size.tiny)
+    bbPos = high >= bbUpper ? "Upper" : low <= bbLower ? "Lower" : "Mid"
+    table.cell(dash, 1, 6, bbPos, text_color=bbPos == "Upper" ? #FF1744 : bbPos == "Lower" ? #00E676 : #8B949E, text_size=size.tiny)
+
+    table.cell(dash, 0, 7, "OBV Trend", text_color=#C9D1D9, text_size=size.tiny)
+    table.cell(dash, 1, 7, obv > obvEma ? "Bullish" : "Bearish", text_color=obv > obvEma ? #00E676 : #FF1744, text_size=size.tiny)
