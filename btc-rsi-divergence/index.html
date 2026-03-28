@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BTC RSI Divergence Detector - Anti-Fakeout Edition</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0e17; color: #e0e0e0; font-family: 'SF Mono', 'Consolas', monospace; }
+
+  .header {
+    padding: 16px 24px;
+    background: linear-gradient(135deg, #0d1117 0%, #161b22 100%);
+    border-bottom: 1px solid #21262d;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .header h1 { font-size: 18px; color: #58a6ff; }
+  .header .price { font-size: 22px; font-weight: bold; color: #f0f6fc; }
+  .header .change { font-size: 14px; margin-left: 8px; }
+  .header .change.up { color: #3fb950; }
+  .header .change.down { color: #f85149; }
+
+  .controls {
+    padding: 12px 24px;
+    background: #0d1117;
+    border-bottom: 1px solid #21262d;
+    display: flex; gap: 8px; align-items: center;
+  }
+  .controls button {
+    padding: 6px 16px; border: 1px solid #30363d; background: #161b22;
+    color: #c9d1d9; border-radius: 6px; cursor: pointer; font-size: 13px;
+    transition: all 0.15s;
+  }
+  .controls button:hover { background: #21262d; border-color: #58a6ff; }
+  .controls button.active { background: #1f6feb; border-color: #58a6ff; color: #fff; }
+  .controls .status { margin-left: auto; font-size: 12px; color: #8b949e; }
+
+  .main { display: flex; height: calc(100vh - 110px); }
+
+  .chart-area { flex: 1; position: relative; padding: 8px; }
+  canvas { width: 100%; background: #0d1117; border-radius: 8px; }
+  #priceChart { height: 60%; }
+  #rsiChart { height: 38%; margin-top: 4px; }
+
+  .panel {
+    width: 360px; background: #0d1117; border-left: 1px solid #21262d;
+    overflow-y: auto; padding: 16px;
+  }
+  .panel h2 { font-size: 14px; color: #8b949e; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px; }
+
+  .signal-card {
+    background: #161b22; border: 1px solid #21262d; border-radius: 8px;
+    padding: 14px; margin-bottom: 10px; transition: border-color 0.2s;
+  }
+  .signal-card:hover { border-color: #58a6ff; }
+  .signal-card .grade {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-weight: bold; font-size: 12px; margin-right: 6px;
+  }
+  .grade-S { background: #f0883e; color: #0d1117; }
+  .grade-A { background: #3fb950; color: #0d1117; }
+  .grade-B { background: #8b949e; color: #0d1117; }
+
+  .signal-card .type { font-size: 14px; font-weight: 600; }
+  .signal-card .type.bullish { color: #3fb950; }
+  .signal-card .type.bearish { color: #f85149; }
+
+  .signal-card .meta { font-size: 11px; color: #8b949e; margin-top: 6px; line-height: 1.6; }
+  .signal-card .confidence-bar {
+    height: 4px; border-radius: 2px; background: #21262d; margin-top: 8px; overflow: hidden;
+  }
+  .signal-card .confidence-fill { height: 100%; border-radius: 2px; transition: width 0.3s; }
+  .conf-high { background: #3fb950; }
+  .conf-mid { background: #d29922; }
+  .conf-low { background: #f85149; }
+
+  .mtf-section { margin-top: 20px; padding-top: 16px; border-top: 1px solid #21262d; }
+
+  .no-signal {
+    text-align: center; padding: 40px 20px; color: #484f58;
+    font-size: 13px; line-height: 1.8;
+  }
+
+  .filter-badge {
+    display: inline-block; padding: 1px 6px; border-radius: 3px;
+    font-size: 10px; margin: 2px; background: #1c2128; border: 1px solid #30363d; color: #8b949e;
+  }
+  .filter-badge.pass { border-color: #238636; color: #3fb950; }
+
+  .loading { text-align: center; padding: 60px; color: #484f58; }
+  .loading .spinner { animation: spin 1s linear infinite; display: inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>BTC RSI Divergence Detector</h1>
+    <span style="font-size:11px;color:#484f58;">Anti-Fakeout Multi-Layer Filter System</span>
+  </div>
+  <div style="text-align:right;">
+    <span class="price" id="currentPrice">--</span>
+    <span class="change" id="priceChange">--</span>
+  </div>
+</div>
+
+<div class="controls">
+  <button class="active" data-tf="1h">1H</button>
+  <button data-tf="4h">4H</button>
+  <button data-tf="1D">1D</button>
+  <span style="color:#30363d;margin:0 8px;">|</span>
+  <button id="btnRefresh">Refresh</button>
+  <span class="status" id="statusText">Loading...</span>
+</div>
+
+<div class="main">
+  <div class="chart-area">
+    <canvas id="priceChart"></canvas>
+    <canvas id="rsiChart"></canvas>
+  </div>
+
+  <div class="panel">
+    <h2>Detected Signals</h2>
+    <div id="signalList">
+      <div class="loading"><span class="spinner">&#9696;</span> Analyzing...</div>
+    </div>
+
+    <div class="mtf-section">
+      <h2>Multi-Timeframe Confluence</h2>
+      <div id="mtfList">
+        <div class="no-signal">Waiting for data...</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="data.js"></script>
+<script src="engine.js"></script>
+<script>
+// ============================================================
+// データ管理
+// ============================================================
+const state = {
+  activeTimeframe: '1h',
+  data: {},       // { '1h': {candles, rsi, atr, divergences, ...}, '4h': ..., '1D': ... }
+  rawCandles: {},  // APIレスポンスの生データ
+};
+
+// ============================================================
+// API呼び出し（Crypto.com MCPプロキシ経由のデータを使用）
+// ============================================================
+// ここではデモ用に埋め込みデータを使用
+// 本番ではfetch()でリアルタイムAPI呼び出しに差し替え
+
+const EMBEDDED_DATA = {
+  '1h': CANDLES_1H,
+  '4h': CANDLES_4H,
+  '1D': CANDLES_1D
+};
+
+// ============================================================
+// Canvas描画エンジン
+// ============================================================
+class ChartRenderer {
+  constructor(canvasId) {
+    this.canvas = document.getElementById(canvasId);
+    this.ctx = this.canvas.getContext('2d');
+    this.dpr = window.devicePixelRatio || 1;
+  }
+
+  resize() {
+    const rect = this.canvas.getBoundingClientRect();
+    this.canvas.width = rect.width * this.dpr;
+    this.canvas.height = rect.height * this.dpr;
+    this.ctx.scale(this.dpr, this.dpr);
+    this.w = rect.width;
+    this.h = rect.height;
+  }
+
+  clear() {
+    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+  }
+
+  drawPriceChart(data, divergences) {
+    this.resize();
+    this.clear();
+    const ctx = this.ctx;
+    const { candles } = data;
+    if (!candles || candles.length === 0) return;
+
+    const pad = { top: 20, right: 60, bottom: 20, left: 10 };
+    const cw = (this.w - pad.left - pad.right) / candles.length;
+    const allHighs = candles.map(c => parseFloat(c.high));
+    const allLows = candles.map(c => parseFloat(c.low));
+    const maxP = Math.max(...allHighs);
+    const minP = Math.min(...allLows);
+    const range = maxP - minP || 1;
+
+    const yScale = (v) => pad.top + (1 - (v - minP) / range) * (this.h - pad.top - pad.bottom);
+    const xPos = (i) => pad.left + i * cw + cw / 2;
+
+    // グリッド
+    ctx.strokeStyle = '#161b22';
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 5; i++) {
+      const y = pad.top + i * (this.h - pad.top - pad.bottom) / 4;
+      ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(this.w - pad.right, y); ctx.stroke();
+      const price = maxP - (i / 4) * range;
+      ctx.fillStyle = '#484f58';
+      ctx.font = '10px monospace';
+      ctx.fillText(price.toFixed(0), this.w - pad.right + 4, y + 3);
+    }
+
+    // ローソク足
+    for (let i = 0; i < candles.length; i++) {
+      const o = parseFloat(candles[i].open);
+      const c = parseFloat(candles[i].close);
+      const h = parseFloat(candles[i].high);
+      const l = parseFloat(candles[i].low);
+      const bull = c >= o;
+      const color = bull ? '#3fb950' : '#f85149';
+      const x = xPos(i);
+
+      // ヒゲ
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x, yScale(h));
+      ctx.lineTo(x, yScale(l));
+      ctx.stroke();
+
+      // 実体
+      const bodyTop = yScale(Math.max(o, c));
+      const bodyBot = yScale(Math.min(o, c));
+      const bodyH = Math.max(1, bodyBot - bodyTop);
+      ctx.fillStyle = color;
+      ctx.fillRect(x - cw * 0.35, bodyTop, cw * 0.7, bodyH);
+    }
+
+    // ダイバージェンスライン
+    for (const div of divergences) {
+      const isBullish = div.type.includes('bullish');
+      ctx.strokeStyle = isBullish ? '#3fb95099' : '#f8514999';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 3]);
+      ctx.beginPath();
+      ctx.moveTo(xPos(div.pointA.index), yScale(div.pointA.price));
+      ctx.lineTo(xPos(div.pointB.index), yScale(div.pointB.price));
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // ラベル
+      const midX = (xPos(div.pointA.index) + xPos(div.pointB.index)) / 2;
+      const midY = (yScale(div.pointA.price) + yScale(div.pointB.price)) / 2 - 10;
+      ctx.fillStyle = isBullish ? '#3fb950' : '#f85149';
+      ctx.font = 'bold 10px monospace';
+      ctx.fillText(`${div.confidence}%`, midX - 12, midY);
+    }
+  }
+
+  drawRSIChart(data, divergences) {
+    this.resize();
+    this.clear();
+    const ctx = this.ctx;
+    const { rsi } = data;
+    if (!rsi || rsi.length === 0) return;
+
+    const pad = { top: 10, right: 60, bottom: 16, left: 10 };
+    const cw = (this.w - pad.left - pad.right) / rsi.length;
+    const yScale = (v) => pad.top + (1 - v / 100) * (this.h - pad.top - pad.bottom);
+    const xPos = (i) => pad.left + i * cw + cw / 2;
+
+    // 過熱/売られすぎゾーン
+    ctx.fillStyle = '#f8514910';
+    ctx.fillRect(pad.left, yScale(100), this.w - pad.left - pad.right, yScale(70) - yScale(100));
+    ctx.fillStyle = '#3fb95010';
+    ctx.fillRect(pad.left, yScale(30), this.w - pad.left - pad.right, yScale(0) - yScale(30));
+
+    // 基準線
+    [70, 50, 30].forEach(v => {
+      ctx.strokeStyle = v === 50 ? '#30363d' : '#21262d';
+      ctx.lineWidth = 1;
+      ctx.setLineDash(v === 50 ? [4, 4] : []);
+      ctx.beginPath(); ctx.moveTo(pad.left, yScale(v)); ctx.lineTo(this.w - pad.right, yScale(v)); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#484f58';
+      ctx.font = '10px monospace';
+      ctx.fillText(v, this.w - pad.right + 4, yScale(v) + 3);
+    });
+
+    // RSIライン
+    ctx.strokeStyle = '#a371f7';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    let started = false;
+    for (let i = 0; i < rsi.length; i++) {
+      if (rsi[i] === null) continue;
+      if (!started) { ctx.moveTo(xPos(i), yScale(rsi[i])); started = true; }
+      else ctx.lineTo(xPos(i), yScale(rsi[i]));
+    }
+    ctx.stroke();
+
+    // ダイバージェンスライン（RSI上）
+    for (const div of divergences) {
+      const isBullish = div.type.includes('bullish');
+      ctx.strokeStyle = isBullish ? '#3fb950cc' : '#f85149cc';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 3]);
+      ctx.beginPath();
+      ctx.moveTo(xPos(div.pointA.index), yScale(div.pointA.rsi));
+      ctx.lineTo(xPos(div.pointB.index), yScale(div.pointB.rsi));
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // ラベル
+    ctx.fillStyle = '#484f58';
+    ctx.font = '10px monospace';
+    ctx.fillText('RSI(14)', pad.left + 4, pad.top + 12);
+  }
+}
+
+// ============================================================
+// UI更新
+// ============================================================
+function renderSignals(divergences) {
+  const el = document.getElementById('signalList');
+  if (!divergences || divergences.length === 0) {
+    el.innerHTML = '<div class="no-signal">No divergence signals detected.<br>All filters passed = zero fakeouts.</div>';
+    return;
+  }
+
+  // 信頼度降順ソート
+  const sorted = [...divergences].sort((a, b) => b.confidence - a.confidence);
+
+  el.innerHTML = sorted.map(d => {
+    const isBullish = d.type.includes('bullish');
+    const confClass = d.confidence >= 80 ? 'conf-high' : d.confidence >= 65 ? 'conf-mid' : 'conf-low';
+    const grade = d.confidence >= 85 ? 'S' : d.confidence >= 70 ? 'A' : 'B';
+
+    return `
+      <div class="signal-card">
+        <span class="grade grade-${grade}">${grade}</span>
+        <span class="type ${isBullish ? 'bullish' : 'bearish'}">${d.label}</span>
+        <div class="meta">
+          Price: ${d.pointA.price.toFixed(0)} → ${d.pointB.price.toFixed(0)}<br>
+          RSI: ${d.pointA.rsi.toFixed(1)} → ${d.pointB.rsi.toFixed(1)}<br>
+          Time: ${new Date(d.pointB.time).toLocaleString('ja-JP')}<br>
+          <span class="filter-badge pass">RSI Zone</span>
+          <span class="filter-badge pass">Volume</span>
+          <span class="filter-badge pass">ATR Sig</span>
+          <span class="filter-badge pass">Distance</span>
+          <span class="filter-badge pass">No Reversal</span>
+          <span class="filter-badge pass">RSI Diff</span>
+        </div>
+        <div class="confidence-bar"><div class="confidence-fill ${confClass}" style="width:${d.confidence}%"></div></div>
+        <div style="text-align:right;font-size:10px;color:#8b949e;margin-top:4px;">Confidence: ${d.confidence}%</div>
+      </div>
+    `;
+  }).join('');
+}
+
+function renderMTF(mtfSignals) {
+  const el = document.getElementById('mtfList');
+  if (!mtfSignals || mtfSignals.length === 0) {
+    el.innerHTML = '<div class="no-signal">No multi-timeframe confluence detected.<br>Single-TF signals are filtered for safety.</div>';
+    return;
+  }
+
+  el.innerHTML = mtfSignals.map(s => {
+    const isBullish = s.direction === 'bullish';
+    return `
+      <div class="signal-card">
+        <span class="grade grade-${s.grade}">${s.grade}</span>
+        <span class="type ${isBullish ? 'bullish' : 'bearish'}">
+          ${isBullish ? '強気合流' : '弱気合流'} (${s.confluence}TF)
+        </span>
+        <div class="meta">
+          Timeframes: ${s.timeframes.join(' + ')}<br>
+          ${s.details.map(d => `${d.timeframe}: ${d.type} (${d.confidence}%)`).join('<br>')}
+        </div>
+        <div class="confidence-bar">
+          <div class="confidence-fill ${s.avgConfidence >= 80 ? 'conf-high' : 'conf-mid'}" style="width:${s.avgConfidence}%"></div>
+        </div>
+        <div style="text-align:right;font-size:10px;color:#8b949e;margin-top:4px;">Combined: ${s.avgConfidence}%</div>
+      </div>
+    `;
+  }).join('');
+}
+
+function updatePrice(ticker) {
+  document.getElementById('currentPrice').textContent = '$' + parseFloat(ticker.last).toLocaleString();
+  const change = parseFloat(ticker.change) * 100;
+  const el = document.getElementById('priceChange');
+  el.textContent = (change >= 0 ? '+' : '') + change.toFixed(2) + '%';
+  el.className = 'change ' + (change >= 0 ? 'up' : 'down');
+}
+
+// ============================================================
+// メインロジック
+// ============================================================
+const priceRenderer = new ChartRenderer('priceChart');
+const rsiRenderer = new ChartRenderer('rsiChart');
+
+function processTimeframe(tf, candles) {
+  const result = analyzeCandles(candles);
+  state.data[tf] = result;
+  return result;
+}
+
+function render() {
+  const tf = state.activeTimeframe;
+  const data = state.data[tf];
+  if (!data) return;
+
+  priceRenderer.drawPriceChart(data, data.divergences);
+  rsiRenderer.drawRSIChart(data, data.divergences);
+  renderSignals(data.divergences);
+
+  // MTF分析
+  if (state.data['1h'] && state.data['4h'] && state.data['1D']) {
+    const mtf = multiTimeframeAnalysis(
+      state.data['1h'].divergences,
+      state.data['4h'].divergences,
+      state.data['1D'].divergences
+    );
+    renderMTF(mtf);
+  }
+
+  document.getElementById('statusText').textContent =
+    `${tf} | ${data.divergences.length} signals | Last: ${new Date().toLocaleTimeString('ja-JP')}`;
+}
+
+// TFボタン
+document.querySelectorAll('.controls button[data-tf]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.controls button[data-tf]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    state.activeTimeframe = btn.dataset.tf;
+    render();
+  });
+});
+
+// リサイズ対応
+window.addEventListener('resize', () => render());
+
+// ============================================================
+// 起動 & データ注入ポイント
+// ============================================================
+function boot(candleData1h, candleData4h, candleData1D, ticker) {
+  processTimeframe('1h', candleData1h);
+  processTimeframe('4h', candleData4h);
+  processTimeframe('1D', candleData1D);
+  if (ticker) updatePrice(ticker);
+  render();
+}
+
+// データが外部から注入される前提。以下はフォールバック。
+if (typeof CANDLES_1H !== 'undefined') {
+  boot(CANDLES_1H, CANDLES_4H, CANDLES_1D,
+    typeof TICKER !== 'undefined' ? TICKER : null);
+}
+</script>
+</body>
+</html>
