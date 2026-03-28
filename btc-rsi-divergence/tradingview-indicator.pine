@@ -397,6 +397,22 @@ f_passAllFilters(rA, rB, pA, pB, bA, bB, isBear) =>
     f_dist(bA, bB) and f_rsiSig(rA, rB) and f_priceSig(pA, pB) and f_rsiZone(rA, rB, isBear) and f_noMidRev(bA, bB, rA, rB, isBear) and f_volDecay(bA, bB)
 
 // ============================================================
+//  ダイバージェンス強度ライン用変数
+//  +側 = 強気ダイバ（上昇期待）、-側 = 弱気ダイバ（下落警戒）
+//  検出時に信頼度を書き込み、その後徐々に減衰
+// ============================================================
+var float divStrength = 0.0
+var float divRaw      = 0.0   // 最新検出値（減衰前）
+var int   divBar      = 0     // 最後にシグナルが出たbar_index
+decayRate = 0.92              // 1バーごとに8%減衰
+
+// 毎バー減衰適用
+divStrength := divStrength * decayRate
+// ±2以下はゼロに丸める（ノイズ除去）
+if math.abs(divStrength) < 2
+    divStrength := 0.0
+
+// ============================================================
 //  メイン検出 - Regular Bearish
 // ============================================================
 if not na(swingHighPrice) and array.size(priceHighs) >= 2 and showRegular
@@ -414,6 +430,8 @@ if not na(swingHighPrice) and array.size(priceHighs) >= 2 and showRegular
                 if f_passAllFilters(prevR, curR, prevP, curP, prevB, curB, true)
                     conf = f_confidence(prevR, curR, prevP, curP, prevB, curB, true)
                     if conf >= minConf
+                        divStrength := -conf
+                        divBar := bar_index
                         line.new(prevB, prevR, curB, curR, color=bearColor, width=2, style=line.style_dashed)
                         fc = f_filterCount(prevR, curR, prevP, curP, prevB, curB, true)
                         lbl = "BEAR " + str.tostring(conf) + "%" + (showFilters ? " [" + str.tostring(fc) + "/12]" : "")
@@ -440,6 +458,8 @@ if not na(swingLowPrice) and array.size(priceLows) >= 2 and showRegular
                 if f_passAllFilters(prevR, curR, prevP, curP, prevB, curB, false)
                     conf = f_confidence(prevR, curR, prevP, curP, prevB, curB, false)
                     if conf >= minConf
+                        divStrength := conf
+                        divBar := bar_index
                         line.new(prevB, prevR, curB, curR, color=bullColor, width=2, style=line.style_dashed)
                         fc = f_filterCount(prevR, curR, prevP, curP, prevB, curB, false)
                         lbl = "BULL " + str.tostring(conf) + "%" + (showFilters ? " [" + str.tostring(fc) + "/12]" : "")
@@ -466,6 +486,8 @@ if not na(swingHighPrice) and array.size(priceHighs) >= 2 and showHidden
                 if f_dist(prevB, curB) and f_rsiSig(prevR, curR) and f_priceSig(prevP, curP) and f_noMidRev(prevB, curB, prevR, curR, true)
                     conf = f_confidence(prevR, curR, prevP, curP, prevB, curB, true)
                     if conf >= math.max(minConf, 70)
+                        divStrength := -conf * 0.8
+                        divBar := bar_index
                         line.new(prevB, prevR, curB, curR, color=color.new(bearColor, 30), width=1, style=line.style_dotted)
                         fc = f_filterCount(prevR, curR, prevP, curP, prevB, curB, true)
                         lbl = "H.BEAR " + str.tostring(conf) + "%" + (showFilters ? " [" + str.tostring(fc) + "/12]" : "")
@@ -492,6 +514,8 @@ if not na(swingLowPrice) and array.size(priceLows) >= 2 and showHidden
                 if f_dist(prevB, curB) and f_rsiSig(prevR, curR) and f_priceSig(prevP, curP) and f_noMidRev(prevB, curB, prevR, curR, false)
                     conf = f_confidence(prevR, curR, prevP, curP, prevB, curB, false)
                     if conf >= math.max(minConf, 70)
+                        divStrength := conf * 0.8
+                        divBar := bar_index
                         line.new(prevB, prevR, curB, curR, color=color.new(bullColor, 30), width=1, style=line.style_dotted)
                         fc = f_filterCount(prevR, curR, prevP, curP, prevB, curB, false)
                         lbl = "H.BULL " + str.tostring(conf) + "%" + (showFilters ? " [" + str.tostring(fc) + "/12]" : "")
@@ -516,6 +540,23 @@ bgcolor(rsiVal < 25 ? color.new(#00E676, 85) : rsiVal < 30 ? color.new(#00E676, 
 // StochRSI サブプロット
 plot(useStochRSI ? stochRsiK : na, "StochRSI K", color=color.new(#FFD600, 50), linewidth=1)
 plot(useStochRSI ? stochRsiD : na, "StochRSI D", color=color.new(#FF6D00, 50), linewidth=1)
+
+// ============================================================
+//  ダイバージェンス強度ライン
+//  +側（緑）= 強気ダイバ（上昇期待）
+//  -側（赤）= 弱気ダイバ（下落警戒）
+//  0   = シグナルなし
+//  RSIの0-100スケールに合わせて50を中心に±で表示
+// ============================================================
+divLineVal = 50.0 + divStrength * 0.2  // ±100 → 50±20のレンジに収める
+divLineColor = divStrength > 5 ? bullColor : divStrength < -5 ? bearColor : color.new(#484F58, 50)
+divPlot = plot(divLineVal, "Div Strength", color=divLineColor, linewidth=2, style=plot.style_line)
+midPlot = plot(50.0, "Div Zero", color=color.new(#484F58, 100), display=display.none)
+fill(divPlot, midPlot,
+     color=divStrength > 5 ? color.new(bullColor, 80) :
+           divStrength < -5 ? color.new(bearColor, 80) :
+           color.new(#484F58, 100),
+     title="Div Strength Fill")
 
 // ============================================================
 //  ダッシュボード（右上テーブル）
