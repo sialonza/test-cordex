@@ -1,13 +1,15 @@
 //@version=5
-indicator("BTC Big Move Predictor - Ultra v2", overlay=true,
+indicator("Big Move Predictor - Ultra v3", overlay=true,
      max_lines_count=500, max_labels_count=500, max_bars_back=500)
 
 // ============================================================
-//  BTC限定
+//  銘柄タイプ自動判定
 // ============================================================
-isBTC = str.contains(str.upper(syminfo.basecurrency), "BTC") or str.contains(str.upper(syminfo.ticker), "BTC")
-if not isBTC
-    runtime.error("BTC専用です。BTCチャートに適用してください。")
+isCrypto = syminfo.type == "crypto"
+isStock  = syminfo.type == "stock"
+isForex  = syminfo.type == "forex"
+isFutures = syminfo.type == "futures"
+isIndex  = syminfo.type == "index"
 
 // ============================================================
 //  入力パラメータ
@@ -28,7 +30,7 @@ useGold     = input.bool(true, "Gold Correlation", group=grp3)
 useSPX      = input.bool(true, "S&P500 Correlation", group=grp3)
 
 grp4 = "Seasonality"
-useSeason   = input.bool(true, "BTC Seasonality Filter", group=grp4)
+useSeason   = input.bool(true, "Seasonality Filter", group=grp4)
 
 grp5 = "Adaptive"
 useAdaptive = input.bool(true, "Adaptive Thresholds", group=grp5)
@@ -172,36 +174,53 @@ htfSqz1 = useMTF and timeframe.isintraday ? f_htfSqueeze(timeframe.multiplier <=
 htfSqz2 = useMTF ? f_htfSqueeze(timeframe.isintraday ? "D" : "W") : false
 
 // ============================================================
-// 12. クロスアセット相関 (max 9)
+// 12. クロスアセット相関 - 銘柄タイプ別自動選択 (max 9)
 // ============================================================
-// DXY急変検出
-dxyClose = useDXY ? request.security("TVC:DXY", timeframe.period, close, lookahead=barmerge.lookahead_off) : na
-dxyATR   = useDXY ? request.security("TVC:DXY", timeframe.period, ta.atr(14), lookahead=barmerge.lookahead_off) : na
-dxyChange = not na(dxyClose) and not na(dxyClose[1]) ? math.abs(dxyClose - dxyClose[1]) : 0
-dxyVolatile = not na(dxyATR) and dxyATR > 0 ? dxyChange > dxyATR * 1.5 : false
+// 参照先: Crypto→DXY/Gold/SPX, 株→VIX/DXY/債券, FX→DXY/Gold/債券
 
-// Gold相関
-goldClose = useGold ? request.security("TVC:GOLD", timeframe.period, close, lookahead=barmerge.lookahead_off) : na
-goldATR   = useGold ? request.security("TVC:GOLD", timeframe.period, ta.atr(14), lookahead=barmerge.lookahead_off) : na
-goldChange = not na(goldClose) and not na(goldClose[1]) ? math.abs(goldClose - goldClose[1]) : 0
-goldVolatile = not na(goldATR) and goldATR > 0 ? goldChange > goldATR * 1.5 : false
+// Asset1: DXY（全タイプ共通）
+a1Close = useDXY ? request.security("TVC:DXY", timeframe.period, close, lookahead=barmerge.lookahead_off) : na
+a1ATR   = useDXY ? request.security("TVC:DXY", timeframe.period, ta.atr(14), lookahead=barmerge.lookahead_off) : na
+a1Change = not na(a1Close) and not na(a1Close[1]) ? math.abs(a1Close - a1Close[1]) : 0
+dxyVolatile = not na(a1ATR) and a1ATR > 0 ? a1Change > a1ATR * 1.5 : false
 
-// S&P500相関
-spxClose = useSPX ? request.security("SP:SPX", timeframe.period, close, lookahead=barmerge.lookahead_off) : na
-spxATR   = useSPX ? request.security("SP:SPX", timeframe.period, ta.atr(14), lookahead=barmerge.lookahead_off) : na
-spxChange = not na(spxClose) and not na(spxClose[1]) ? math.abs(spxClose - spxClose[1]) : 0
-spxVolatile = not na(spxATR) and spxATR > 0 ? spxChange > spxATR * 1.5 : false
+// Asset2: Crypto→Gold, 株→VIX, FX→Gold
+a2Sym = isCrypto ? "TVC:GOLD" : isStock or isIndex ? "CBOE:VIX" : "TVC:GOLD"
+a2Close = useGold ? request.security(a2Sym, timeframe.period, close, lookahead=barmerge.lookahead_off) : na
+a2ATR   = useGold ? request.security(a2Sym, timeframe.period, ta.atr(14), lookahead=barmerge.lookahead_off) : na
+a2Change = not na(a2Close) and not na(a2Close[1]) ? math.abs(a2Close - a2Close[1]) : 0
+goldVolatile = not na(a2ATR) and a2ATR > 0 ? a2Change > a2ATR * 1.5 : false
+
+// Asset3: Crypto→SPX, 株→US10Y, FX→SPX
+a3Sym = isCrypto ? "SP:SPX" : isStock or isIndex ? "TVC:US10Y" : "SP:SPX"
+a3Close = useSPX ? request.security(a3Sym, timeframe.period, close, lookahead=barmerge.lookahead_off) : na
+a3ATR   = useSPX ? request.security(a3Sym, timeframe.period, ta.atr(14), lookahead=barmerge.lookahead_off) : na
+a3Change = not na(a3Close) and not na(a3Close[1]) ? math.abs(a3Close - a3Close[1]) : 0
+spxVolatile = not na(a3ATR) and a3ATR > 0 ? a3Change > a3ATR * 1.5 : false
 
 // ============================================================
-// 13. BTC曜日・時間帯の季節性 (max 5)
+// 13. 曜日・時間帯の季節性 - 銘柄タイプ別 (max 5)
 // ============================================================
 dow = dayofweek
 hourNow = hour
-// BTCの統計的に大きく動きやすい時間帯
-// 月曜早朝（週末明け）、水曜・木曜（米国経済指標）、金曜（週末前ポジ調整）
-isVolatileDay = useSeason ? (dow == dayofweek.monday or dow == dayofweek.wednesday or dow == dayofweek.thursday or dow == dayofweek.friday) : false
-// NY時間帯（13-21 UTC）とアジア開場（0-3 UTC）
-isVolatileHour = useSeason and timeframe.isintraday ? (hourNow >= 13 and hourNow <= 21) or (hourNow >= 0 and hourNow <= 3) : false
+isVolatileDay = false
+isVolatileHour = false
+if useSeason
+    if isCrypto
+        // Crypto: 月曜早朝、水木（米指標）、金（週末前調整）
+        isVolatileDay := dow == dayofweek.monday or dow == dayofweek.wednesday or dow == dayofweek.thursday or dow == dayofweek.friday
+        isVolatileHour := timeframe.isintraday ? (hourNow >= 13 and hourNow <= 21) or (hourNow >= 0 and hourNow <= 3) : false
+    else if isStock or isIndex or isFutures
+        // 株/指数: 月曜ギャップ、水（FOMC等）、金（オプションSQ）
+        isVolatileDay := dow == dayofweek.monday or dow == dayofweek.wednesday or dow == dayofweek.friday
+        isVolatileHour := timeframe.isintraday ? (hourNow >= 13 and hourNow <= 16) or (hourNow >= 19 and hourNow <= 21) : false
+    else if isForex
+        // FX: 火水木（流動性ピーク）
+        isVolatileDay := dow == dayofweek.tuesday or dow == dayofweek.wednesday or dow == dayofweek.thursday
+        isVolatileHour := timeframe.isintraday ? (hourNow >= 7 and hourNow <= 9) or (hourNow >= 13 and hourNow <= 16) : false
+    else
+        isVolatileDay := dow != dayofweek.saturday and dow != dayofweek.sunday
+        isVolatileHour := true
 
 // ============================================================
 // 14. ローソク足パターン認識（圧縮ゾーン出口）(max 5)
@@ -335,12 +354,18 @@ if not na(rsi_htf)
     else if rsi_htf > 55
         bearBias += 1
 
-// DXY逆相関
-if not na(dxyClose) and not na(dxyClose[1])
-    if dxyClose < dxyClose[1]
-        bullBias += 1  // ドル安→BTC高
+// DXY逆相関（Crypto/FXはドル安=ブル、株は逆）
+if not na(a1Close) and not na(a1Close[1])
+    if isCrypto or isForex
+        if a1Close < a1Close[1]
+            bullBias += 1  // ドル安→上昇
+        else
+            bearBias += 1
     else
-        bearBias += 1
+        if a1Close > a1Close[1]
+            bullBias += 1  // ドル高→株高（リスクオン時）
+        else
+            bearBias += 1
 
 // Engulfingパターン
 if bullEngulf
@@ -455,12 +480,12 @@ plot(isNew and finalScore >= 75 ? close - expMove : na, "Exp Lower", color=color
 if alertEnabled and isNew
     dirTxt = dirScore >= 3 ? "UP" : dirScore <= -3 ? "DOWN" : "UNKNOWN"
     if finalScore >= 80
-        alert("BTC BIG MOVE [S " + str.tostring(finalScore) + "%] Dir:" + dirTxt +
+        alert(syminfo.ticker + " BIG MOVE [S " + str.tostring(finalScore) + "%] Dir:" + dirTxt +
              " | Hit:" + str.tostring(hitRate) + "% | " +
-             syminfo.ticker + " " + timeframe.period, alert.freq_once_per_bar_close)
+             timeframe.period, alert.freq_once_per_bar_close)
     else if finalScore >= 65
-        alert("BTC Move [A " + str.tostring(finalScore) + "%] | " +
-             syminfo.ticker + " " + timeframe.period, alert.freq_once_per_bar_close)
+        alert(syminfo.ticker + " Move [A " + str.tostring(finalScore) + "%] | " +
+             timeframe.period, alert.freq_once_per_bar_close)
 
 // ============================================================
 //  ダッシュボード
