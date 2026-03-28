@@ -1,0 +1,327 @@
+//@version=5
+indicator("BTC Big Move Predictor - Ultra", overlay=true,
+     max_labels_count=500, max_lines_count=500, max_bars_back=500)
+
+// ============================================================
+//  BTC限定
+// ============================================================
+isBTC = str.contains(str.upper(syminfo.basecurrency), "BTC") or str.contains(str.upper(syminfo.ticker), "BTC")
+if not isBTC
+    runtime.error("BTC専用です。BTCチャートに適用してください。")
+
+// ============================================================
+//  入力パラメータ
+// ============================================================
+grp1 = "Detection Sensitivity"
+sqzLen      = input.int(20, "Squeeze Period", minval=5, group=grp1)
+atrLen      = input.int(14, "ATR Period", minval=2, group=grp1)
+volLen      = input.int(20, "Volume MA Period", minval=5, group=grp1)
+minScore    = input.int(60, "Min Signal Score %", minval=10, maxval=100, group=grp1)
+
+grp2 = "Visual"
+highColor   = input.color(color.new(#FFD600, 0), "High Probability", group=grp2)
+midColor    = input.color(color.new(#FF9100, 0), "Medium Probability", group=grp2)
+showLabels  = input.bool(true, "Show Date Labels", group=grp2)
+showBG      = input.bool(true, "Show Background Highlight", group=grp2)
+
+grp3 = "Alerts"
+alertEnabled = input.bool(true, "Enable Alerts", group=grp3)
+
+// ============================================================
+//  指標計算
+// ============================================================
+
+// --- ATR & Historical Volatility ---
+atrVal     = ta.atr(atrLen)
+atrSMA     = ta.sma(atrVal, sqzLen)
+atrRatio   = atrVal / atrSMA  // 1未満=圧縮中, 1超=拡大中
+hvol       = ta.stdev(math.log(close / close[1]), sqzLen) * math.sqrt(365) * 100 // 年率HV%
+
+// ATR最小値検出（過去N期間で最も圧縮されている度合い）
+atrMin     = ta.lowest(atrVal, sqzLen)
+atrMax     = ta.highest(atrVal, sqzLen)
+atrCompression = atrMax > 0 ? 1.0 - (atrVal - atrMin) / (atrMax - atrMin) : 0
+
+// --- Bollinger Band Squeeze ---
+[bbUpper, bbBasis, bbLower] = ta.bb(close, sqzLen, 2.0)
+bbWidth    = (bbUpper - bbLower) / bbBasis * 100
+bbWidthSMA = ta.sma(bbWidth, sqzLen)
+bbSqueeze  = bbWidth < bbWidthSMA * 0.75  // バンド幅が平均の75%未満
+
+// BBWidth最小値検出
+bbWidthMin = ta.lowest(bbWidth, sqzLen * 2)
+bbWidthMax = ta.highest(bbWidth, sqzLen * 2)
+bbCompression = bbWidthMax > bbWidthMin ? 1.0 - (bbWidth - bbWidthMin) / (bbWidthMax - bbWidthMin) : 0
+
+// --- Keltner Channel Squeeze ---
+kcMid      = ta.ema(close, sqzLen)
+kcRange    = ta.atr(sqzLen) * 1.5
+kcUpper    = kcMid + kcRange
+kcLower    = kcMid - kcRange
+kcSqueeze  = bbUpper < kcUpper and bbLower > kcLower  // BB内がKC内に収まる = 強スクイーズ
+
+// --- Volume分析 ---
+volSMA     = ta.sma(volume, volLen)
+volRatio   = volume / volSMA
+volDryUp   = volRatio < 0.6   // 出来高枯渇
+volSpike   = volRatio > 2.0   // 出来高急増
+
+// 出来高の縮小トレンド検出（直近N本が連続して平均以下）
+volDecayCount = 0
+for i = 0 to 4
+    if volume[i] < volSMA[i]
+        volDecayCount += 1
+
+// --- 値幅縮小（Narrow Range）---
+range_     = high - low
+rangeSMA   = ta.sma(range_, sqzLen)
+narrowRange = range_ < rangeSMA * 0.5     // 通常の半分以下のレンジ
+nrCount = 0
+for i = 0 to 3
+    if (high[i] - low[i]) < rangeSMA[i] * 0.6
+        nrCount += 1
+
+// --- Inside Bar検出 ---
+insideBar  = high < high[1] and low > low[1]
+insideBarCount = 0
+for i = 0 to 4
+    if high[i] < high[i+1] and low[i] > low[i+1]
+        insideBarCount += 1
+
+// --- RSI極端域からの収束 ---
+rsiVal     = ta.rsi(close, 14)
+rsiRange   = ta.highest(rsiVal, sqzLen) - ta.lowest(rsiVal, sqzLen)
+rsiCompressed = rsiRange < 15  // RSIレンジが15pt以下に圧縮
+
+// --- MACD ヒストグラム収束 ---
+[macdLine, signalLine, macdHist] = ta.macd(close, 12, 26, 9)
+macdHistAbs = math.abs(macdHist)
+macdHistSMA = ta.sma(macdHistAbs, sqzLen)
+macdFlat    = macdHistAbs < macdHistSMA * 0.3  // ヒストグラムが平坦化
+
+// --- 価格の三角持ち合い検出 ---
+highLine   = ta.highest(high, sqzLen)
+lowLine    = ta.lowest(low, sqzLen)
+priceRange = highLine - lowLine
+priceRangePrev = ta.highest(high, sqzLen)[sqzLen] - ta.lowest(low, sqzLen)[sqzLen]
+triangleCompression = priceRangePrev > 0 ? priceRange / priceRangePrev : 1.0
+isTriangle = triangleCompression < 0.6  // レンジが前期間の60%以下に圧縮
+
+// --- EMA収束（デスクロス/ゴールデンクロス直前）---
+ema9   = ta.ema(close, 9)
+ema21  = ta.ema(close, 21)
+ema50  = ta.ema(close, 50)
+emaDiff = math.abs(ema9 - ema21) / close * 100
+emaConverging = emaDiff < 0.3  // EMA9とEMA21が0.3%以内
+
+// --- OBV乖離 ---
+obv_    = ta.cum(close > close[1] ? volume : close < close[1] ? -volume : 0)
+obvEma  = ta.ema(obv_, 20)
+obvDiv  = math.abs(obv_ - obvEma) / math.abs(obvEma) * 100
+
+// ============================================================
+//  大変動スコア計算（0-100）
+//  複数の圧縮シグナルが重なるほどスコアが高い
+// ============================================================
+score = 0.0
+
+// (1) BB Squeeze: max 15
+if bbSqueeze
+    score += 10.0
+score += bbCompression * 5.0
+
+// (2) Keltner Squeeze: max 15（最強のスクイーズ指標）
+if kcSqueeze
+    score += 15.0
+
+// (3) ATR圧縮: max 12
+score += atrCompression * 12.0
+
+// (4) 出来高枯渇: max 10
+if volDryUp
+    score += 5.0
+score += math.min(5.0, volDecayCount * 1.0)
+
+// (5) Narrow Range: max 10
+if narrowRange
+    score += 5.0
+score += math.min(5.0, nrCount * 1.25)
+
+// (6) Inside Bar: max 8
+score += math.min(8.0, insideBarCount * 2.0)
+
+// (7) RSI圧縮: max 8
+if rsiCompressed
+    score += 8.0
+
+// (8) MACD平坦化: max 7
+if macdFlat
+    score += 7.0
+
+// (9) 三角持ち合い: max 10
+if isTriangle
+    score += 10.0
+
+// (10) EMA収束: max 5
+if emaConverging
+    score += 5.0
+
+// 正規化
+finalScore = math.min(100.0, math.round(score))
+
+// ============================================================
+//  シグナル判定
+// ============================================================
+isHighSignal = finalScore >= 75
+isMidSignal  = finalScore >= minScore and finalScore < 75
+isSignal     = finalScore >= minScore
+
+// 連続シグナルの抑制（前のバーでも出ていたら控えめに）
+var int lastSignalBar = 0
+isNewSignal = isSignal and (bar_index - lastSignalBar) >= 3
+if isNewSignal
+    lastSignalBar := bar_index
+
+// ============================================================
+//  描画 - 背景ハイライト
+// ============================================================
+bgCol = showBG ?
+     (isHighSignal ? color.new(highColor, 75) :
+      isMidSignal  ? color.new(midColor, 85) : na) : na
+bgcolor(bgCol, title="Signal Background")
+
+// ============================================================
+//  描画 - 日付ラベル
+// ============================================================
+if showLabels and isNewSignal
+    grade = isHighSignal ? "S" : "A"
+    txt = grade + " | " + str.tostring(finalScore) + "%"
+    lblColor = isHighSignal ? highColor : midColor
+    label.new(bar_index, low - atrVal * 0.5, txt,
+         color=lblColor, textcolor=color.new(#000000, 0),
+         size=size.small, style=label.style_label_up)
+
+// ============================================================
+//  描画 - 天井・底の予測バー（縦線）
+// ============================================================
+if isNewSignal and isHighSignal
+    line.new(bar_index, high + atrVal * 2, bar_index, low - atrVal * 2,
+         color=color.new(highColor, 50), width=2, style=line.style_solid)
+
+// ============================================================
+//  方向予測（RSIダイバージェンス＋EMAトレンド統合）
+// ============================================================
+bullBias = 0
+bearBias = 0
+
+// RSI位置
+if rsiVal < 35
+    bullBias += 2
+if rsiVal > 65
+    bearBias += 2
+
+// EMA配列
+if ema9 > ema21 and ema21 > ema50
+    bullBias += 1
+if ema9 < ema21 and ema21 < ema50
+    bearBias += 1
+
+// MACD方向
+if macdHist > 0 and macdHist > macdHist[1]
+    bullBias += 1
+if macdHist < 0 and macdHist < macdHist[1]
+    bearBias += 1
+
+// OBVトレンド
+if obv_ > obvEma
+    bullBias += 1
+if obv_ < obvEma
+    bearBias += 1
+
+// 上位足トレンド
+rsi_htf = request.security(syminfo.tickerid,
+     timeframe.isintraday ? (timeframe.multiplier <= 60 ? "240" : "D") : "W",
+     ta.rsi(close, 14), lookahead=barmerge.lookahead_off)
+if not na(rsi_htf)
+    if rsi_htf < 40
+        bullBias += 2
+    if rsi_htf > 60
+        bearBias += 2
+
+directionScore = bullBias - bearBias  // +なら上方向、-なら下方向
+
+// 方向矢印
+if showLabels and isNewSignal and isHighSignal
+    if directionScore >= 2
+        label.new(bar_index, low - atrVal * 1.5, "UP",
+             color=color.new(#00E676, 0), textcolor=#000000,
+             size=size.tiny, style=label.style_label_up)
+    else if directionScore <= -2
+        label.new(bar_index, high + atrVal * 1.5, "DOWN",
+             color=color.new(#FF1744, 0), textcolor=#FFFFFF,
+             size=size.tiny, style=label.style_label_down)
+
+// ============================================================
+//  予測レンジバンド（大変動時の想定到達レンジ）
+// ============================================================
+expectedMove = atrVal * 3.0  // ATRの3倍を想定最大変動幅
+plot(isHighSignal ? close + expectedMove : na, "Expected Upper", color=color.new(#00E676, 70), style=plot.style_circles, linewidth=1)
+plot(isHighSignal ? close - expectedMove : na, "Expected Lower", color=color.new(#FF1744, 70), style=plot.style_circles, linewidth=1)
+
+// ============================================================
+//  アラート
+// ============================================================
+if alertEnabled and isNewSignal
+    if isHighSignal
+        alert("BTC BIG MOVE WARNING [S級 " + str.tostring(finalScore) + "%] | " +
+             (directionScore >= 2 ? "Bias: UP" : directionScore <= -2 ? "Bias: DOWN" : "Direction: UNKNOWN") +
+             " | " + syminfo.ticker + " " + timeframe.period, alert.freq_once_per_bar_close)
+    else
+        alert("BTC Move Alert [A級 " + str.tostring(finalScore) + "%] | " +
+             syminfo.ticker + " " + timeframe.period, alert.freq_once_per_bar_close)
+
+// ============================================================
+//  ダッシュボード
+// ============================================================
+var table dash = table.new(position.top_right, 2, 12, bgcolor=color.new(#0D1117, 10), border_width=1, border_color=color.new(#30363D, 0))
+
+if barstate.islast
+    table.cell(dash, 0, 0, "Big Move Score", text_color=#FFD600, text_size=size.small)
+    table.cell(dash, 1, 0, str.tostring(finalScore) + "%",
+         text_color=finalScore >= 75 ? #FFD600 : finalScore >= 60 ? #FF9100 : #8B949E,
+         text_size=size.small)
+
+    table.cell(dash, 0, 1, "BB Squeeze", text_color=#C9D1D9, text_size=size.tiny)
+    table.cell(dash, 1, 1, bbSqueeze ? "ACTIVE" : "---", text_color=bbSqueeze ? #FFD600 : #484F58, text_size=size.tiny)
+
+    table.cell(dash, 0, 2, "KC Squeeze", text_color=#C9D1D9, text_size=size.tiny)
+    table.cell(dash, 1, 2, kcSqueeze ? "ACTIVE" : "---", text_color=kcSqueeze ? #FF1744 : #484F58, text_size=size.tiny)
+
+    table.cell(dash, 0, 3, "ATR Compress", text_color=#C9D1D9, text_size=size.tiny)
+    table.cell(dash, 1, 3, str.tostring(atrCompression * 100, "#") + "%", text_color=atrCompression > 0.7 ? #FFD600 : #8B949E, text_size=size.tiny)
+
+    table.cell(dash, 0, 4, "Volume", text_color=#C9D1D9, text_size=size.tiny)
+    table.cell(dash, 1, 4, volDryUp ? "DRY UP" : str.tostring(volRatio, "#.#") + "x", text_color=volDryUp ? #FF9100 : #8B949E, text_size=size.tiny)
+
+    table.cell(dash, 0, 5, "Narrow Range", text_color=#C9D1D9, text_size=size.tiny)
+    table.cell(dash, 1, 5, str.tostring(nrCount) + "/4", text_color=nrCount >= 3 ? #FFD600 : #8B949E, text_size=size.tiny)
+
+    table.cell(dash, 0, 6, "Inside Bars", text_color=#C9D1D9, text_size=size.tiny)
+    table.cell(dash, 1, 6, str.tostring(insideBarCount), text_color=insideBarCount >= 2 ? #FFD600 : #8B949E, text_size=size.tiny)
+
+    table.cell(dash, 0, 7, "RSI Squeeze", text_color=#C9D1D9, text_size=size.tiny)
+    table.cell(dash, 1, 7, rsiCompressed ? "YES" : "---", text_color=rsiCompressed ? #FFD600 : #484F58, text_size=size.tiny)
+
+    table.cell(dash, 0, 8, "MACD Flat", text_color=#C9D1D9, text_size=size.tiny)
+    table.cell(dash, 1, 8, macdFlat ? "YES" : "---", text_color=macdFlat ? #FFD600 : #484F58, text_size=size.tiny)
+
+    table.cell(dash, 0, 9, "Triangle", text_color=#C9D1D9, text_size=size.tiny)
+    table.cell(dash, 1, 9, isTriangle ? "DETECTED" : "---", text_color=isTriangle ? #FF1744 : #484F58, text_size=size.tiny)
+
+    table.cell(dash, 0, 10, "EMA Converge", text_color=#C9D1D9, text_size=size.tiny)
+    table.cell(dash, 1, 10, emaConverging ? "YES" : "---", text_color=emaConverging ? #FFD600 : #484F58, text_size=size.tiny)
+
+    dirTxt = directionScore >= 2 ? "BULLISH" : directionScore <= -2 ? "BEARISH" : "NEUTRAL"
+    dirCol = directionScore >= 2 ? #00E676 : directionScore <= -2 ? #FF1744 : #8B949E
+    table.cell(dash, 0, 11, "Direction Bias", text_color=#C9D1D9, text_size=size.tiny)
+    table.cell(dash, 1, 11, dirTxt, text_color=dirCol, text_size=size.tiny)
