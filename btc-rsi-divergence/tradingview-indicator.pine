@@ -3,6 +3,13 @@ indicator("BTC RSI Divergence - Ultra Anti-Fakeout v2", overlay=false,
      max_lines_count=500, max_labels_count=500, max_bars_back=500)
 
 // ============================================================
+//  BTC限定チェック - BTC以外のチャートでは動作しない
+// ============================================================
+isBTC = str.contains(str.upper(syminfo.basecurrency), "BTC") or str.contains(str.upper(syminfo.ticker), "BTC")
+if not isBTC
+    runtime.error("This indicator is designed exclusively for BTC charts. Please apply to a BTC pair (e.g. BTCUSDT, BTCUSD, BTC.D).")
+
+// ============================================================
 //  パラメータ
 // ============================================================
 grp_rsi = "RSI"
