@@ -1,0 +1,322 @@
+//@version=5
+indicator("BTC RSI Divergence - Anti-Fakeout", overlay=false, max_lines_count=500, max_labels_count=500)
+
+// ============================================================
+// 入力パラメータ
+// ============================================================
+grp_rsi    = "RSI Settings"
+rsiLen     = input.int(14, "RSI Period", minval=2, group=grp_rsi)
+rsiOB      = input.float(65.0, "RSI Overbought Zone", minval=50, maxval=90, group=grp_rsi)
+rsiOS      = input.float(35.0, "RSI Oversold Zone", minval=10, maxval=50, group=grp_rsi)
+
+grp_swing  = "Swing Detection"
+swingLB    = input.int(5, "Swing Lookback", minval=2, maxval=20, group=grp_swing)
+
+grp_filter = "Anti-Fakeout Filters"
+minRSIDiff = input.float(3.0, "Min RSI Difference", minval=0.5, step=0.5, group=grp_filter)
+minBars    = input.int(5, "Min Bars Between Pivots", minval=2, group=grp_filter)
+maxBars    = input.int(60, "Max Bars Between Pivots", minval=10, group=grp_filter)
+atrLen     = input.int(14, "ATR Period", minval=1, group=grp_filter)
+atrMult    = input.float(0.5, "ATR Significance Multiplier", minval=0.1, step=0.1, group=grp_filter)
+useVolFilt = input.bool(true, "Volume Filter", group=grp_filter)
+useIntFilt = input.bool(true, "Intermediate Reversal Filter", group=grp_filter)
+minConf    = input.int(60, "Min Confidence %", minval=0, maxval=100, group=grp_filter)
+
+grp_vis    = "Visual"
+showRegular = input.bool(true, "Show Regular Divergence", group=grp_vis)
+showHidden  = input.bool(true, "Show Hidden Divergence", group=grp_vis)
+bullColor   = input.color(color.new(#00C853, 0), "Bullish Color", group=grp_vis)
+bearColor   = input.color(color.new(#FF1744, 0), "Bearish Color", group=grp_vis)
+showConf    = input.bool(true, "Show Confidence %", group=grp_vis)
+
+grp_alert  = "Alerts"
+alertMinConf = input.int(70, "Alert Min Confidence %", minval=0, maxval=100, group=grp_alert)
+
+// ============================================================
+// RSI & ATR 計算
+// ============================================================
+rsiVal = ta.rsi(close, rsiLen)
+atrVal = ta.atr(atrLen)
+
+// ============================================================
+// スイングポイント検出（確定足のみ）
+// ============================================================
+swingHighPrice = ta.pivothigh(high, swingLB, swingLB)
+swingLowPrice  = ta.pivotlow(low, swingLB, swingLB)
+rsiSwingHigh   = ta.pivothigh(rsiVal, swingLB, swingLB)
+rsiSwingLow    = ta.pivotlow(rsiVal, swingLB, swingLB)
+
+// ============================================================
+// 過去のスイングポイントを保存（配列）
+// ============================================================
+var float[] priceHighs    = array.new_float()
+var int[]   priceHighBars = array.new_int()
+var float[] rsiHighs      = array.new_float()
+var int[]   rsiHighBars   = array.new_int()
+
+var float[] priceLows     = array.new_float()
+var int[]   priceLowBars  = array.new_int()
+var float[] rsiLows       = array.new_float()
+var int[]   rsiLowBars    = array.new_int()
+
+// 配列サイズ上限
+maxPivots = 20
+
+// スイングハイ記録
+if not na(swingHighPrice)
+    array.unshift(priceHighs, swingHighPrice)
+    array.unshift(priceHighBars, bar_index - swingLB)
+    if array.size(priceHighs) > maxPivots
+        array.pop(priceHighs)
+        array.pop(priceHighBars)
+
+if not na(rsiSwingHigh)
+    array.unshift(rsiHighs, rsiSwingHigh)
+    array.unshift(rsiHighBars, bar_index - swingLB)
+    if array.size(rsiHighs) > maxPivots
+        array.pop(rsiHighs)
+        array.pop(rsiHighBars)
+
+// スイングロー記録
+if not na(swingLowPrice)
+    array.unshift(priceLows, swingLowPrice)
+    array.unshift(priceLowBars, bar_index - swingLB)
+    if array.size(priceLows) > maxPivots
+        array.pop(priceLows)
+        array.pop(priceLowBars)
+
+if not na(rsiSwingLow)
+    array.unshift(rsiLows, rsiSwingLow)
+    array.unshift(rsiLowBars, bar_index - swingLB)
+    if array.size(rsiLows) > maxPivots
+        array.pop(rsiLows)
+        array.pop(rsiLowBars)
+
+// ============================================================
+// フィルター関数群
+// ============================================================
+
+// RSI極限ゾーン確認
+f_rsiZone(rsiA, rsiB, isBearish) =>
+    isBearish ? (rsiA > rsiOB or rsiB > rsiOB) : (rsiA < rsiOS or rsiB < rsiOS)
+
+// 距離検証
+f_distance(barA, barB) =>
+    d = math.abs(barB - barA)
+    d >= minBars and d <= maxBars
+
+// RSI差分有意性
+f_rsiSig(rsiA, rsiB) =>
+    math.abs(rsiA - rsiB) >= minRSIDiff
+
+// 価格ATR有意性
+f_priceSig(priceA, priceB, currentATR) =>
+    na(currentATR) ? true : math.abs(priceA - priceB) > currentATR * atrMult
+
+// 出来高フィルター（2点目で出来高減少=勢い喪失を確認）
+f_volFilter(barA, barB) =>
+    if not useVolFilt
+        true
+    else
+        volA = ta.sma(volume, 3)[bar_index - barA]
+        volB = ta.sma(volume, 3)[bar_index - barB]
+        na(volA) or na(volB) ? true : volB < volA * 1.3
+
+// 中間反転フィルター
+f_noIntermediate(barA, barB, rsiA, rsiB, isBearish) =>
+    if not useIntFilt
+        true
+    else
+        clean = true
+        maxCheck = math.min(bar_index, math.abs(barB - barA) - 1)
+        startOffset = bar_index - math.max(barA, barB) + 1
+        for i = 1 to maxCheck
+            idx = bar_index - math.min(barA, barB) - i
+            if idx >= 0
+                rsiMid = rsiVal[idx]
+                if not na(rsiMid)
+                    if isBearish
+                        if rsiMid > math.max(rsiA, rsiB) + 3
+                            clean := false
+                            break
+                    else
+                        if rsiMid < math.min(rsiA, rsiB) - 3
+                            clean := false
+                            break
+        clean
+
+// ============================================================
+// 信頼度スコア計算
+// ============================================================
+f_confidence(rsiA, rsiB, priceA, priceB, barA, barB, isBearish) =>
+    score = 0.0
+
+    // (A) RSI乖離度 max 25
+    rsiDiff = math.abs(rsiA - rsiB)
+    score += math.min(25.0, rsiDiff * 2.5)
+
+    // (B) RSI極限度 max 20
+    if isBearish
+        mx = math.max(rsiA, rsiB)
+        score += mx > 75 ? 20.0 : mx > 70 ? 15.0 : mx > 65 ? 10.0 : 5.0
+    else
+        mn = math.min(rsiA, rsiB)
+        score += mn < 25 ? 20.0 : mn < 30 ? 15.0 : mn < 35 ? 10.0 : 5.0
+
+    // (C) 価格ATR比 max 20
+    if not na(atrVal) and atrVal > 0
+        pRatio = math.abs(priceA - priceB) / atrVal
+        score += math.min(20.0, pRatio * 5.0)
+
+    // (D) 距離適正度 max 15
+    dist = math.abs(barB - barA)
+    score += dist >= 10 and dist <= 25 ? 15.0 : dist >= 7 and dist <= 35 ? 10.0 : 5.0
+
+    // (E) 出来高裏付け max 20
+    volA = volume[bar_index - barA]
+    volB = volume[bar_index - barB]
+    if not na(volA) and not na(volB) and volA > 0
+        vRatio = volB / volA
+        score += vRatio < 0.7 ? 20.0 : vRatio < 0.9 ? 15.0 : vRatio < 1.1 ? 10.0 : 5.0
+    else
+        score += 10.0
+
+    math.min(100.0, math.round(score))
+
+// ============================================================
+// RSIスイングとプライススイングのマッチング
+// ============================================================
+f_findMatchingRSISwing(rsiSwingBarArr, rsiSwingValArr, targetBar, tolerance) =>
+    bestVal = float(na)
+    bestBar = int(na)
+    bestDist = tolerance + 1
+    for i = 0 to math.min(array.size(rsiSwingBarArr) - 1, maxPivots - 1)
+        sb = array.get(rsiSwingBarArr, i)
+        dist = math.abs(sb - targetBar)
+        if dist <= tolerance and dist < bestDist
+            bestVal := array.get(rsiSwingValArr, i)
+            bestBar := sb
+            bestDist := dist
+    [bestVal, bestBar]
+
+// ============================================================
+// メイン検出ロジック
+// ============================================================
+var label lastBullLabel = na
+var label lastBearLabel = na
+var line  lastBullLine  = na
+var line  lastBearLine  = na
+
+// 新しいスイングハイが確定した時 → 弱気ダイバージェンス検出
+if not na(swingHighPrice) and array.size(priceHighs) >= 2 and showRegular
+    curPrice = swingHighPrice
+    curBar   = bar_index - swingLB
+    [curRSI, curRSIBar] = f_findMatchingRSISwing(rsiHighBars, rsiHighs, curBar, 3)
+
+    if not na(curRSI)
+        for i = 1 to math.min(array.size(priceHighs) - 1, 5)
+            prevPrice = array.get(priceHighs, i)
+            prevBar   = array.get(priceHighBars, i)
+            [prevRSI, prevRSIBar] = f_findMatchingRSISwing(rsiHighBars, rsiHighs, prevBar, 3)
+
+            if not na(prevRSI)
+                // Regular Bearish: 価格HH + RSI LH
+                if curPrice > prevPrice and curRSI < prevRSI
+                    if f_distance(prevBar, curBar) and f_rsiZone(prevRSI, curRSI, true) and f_rsiSig(prevRSI, curRSI) and f_priceSig(prevPrice, curPrice, atrVal) and f_noIntermediate(prevBar, curBar, prevRSI, curRSI, true)
+                        conf = f_confidence(prevRSI, curRSI, prevPrice, curPrice, prevBar, curBar, true)
+                        if conf >= minConf
+                            lastBearLine := line.new(prevBar, prevRSI, curBar, curRSI, color=bearColor, width=2, style=line.style_dashed)
+                            lblTxt = showConf ? "Bear Div " + str.tostring(conf) + "%" : "Bear Div"
+                            lastBearLabel := label.new(curBar, curRSI + 3, lblTxt, color=bearColor, textcolor=color.white, size=size.small, style=label.style_label_down)
+                            if conf >= alertMinConf
+                                alert("BEARISH RSI Divergence detected! Confidence: " + str.tostring(conf) + "%", alert.freq_once_per_bar_close)
+                            break
+
+// 新しいスイングローが確定した時 → 強気ダイバージェンス検出
+if not na(swingLowPrice) and array.size(priceLows) >= 2 and showRegular
+    curPrice = swingLowPrice
+    curBar   = bar_index - swingLB
+    [curRSI, curRSIBar] = f_findMatchingRSISwing(rsiLowBars, rsiLows, curBar, 3)
+
+    if not na(curRSI)
+        for i = 1 to math.min(array.size(priceLows) - 1, 5)
+            prevPrice = array.get(priceLows, i)
+            prevBar   = array.get(priceLowBars, i)
+            [prevRSI, prevRSIBar] = f_findMatchingRSISwing(rsiLowBars, rsiLows, prevBar, 3)
+
+            if not na(prevRSI)
+                // Regular Bullish: 価格LL + RSI HL
+                if curPrice < prevPrice and curRSI > prevRSI
+                    if f_distance(prevBar, curBar) and f_rsiZone(prevRSI, curRSI, false) and f_rsiSig(prevRSI, curRSI) and f_priceSig(prevPrice, curPrice, atrVal) and f_noIntermediate(prevBar, curBar, prevRSI, curRSI, false)
+                        conf = f_confidence(prevRSI, curRSI, prevPrice, curPrice, prevBar, curBar, false)
+                        if conf >= minConf
+                            lastBullLine := line.new(prevBar, prevRSI, curBar, curRSI, color=bullColor, width=2, style=line.style_dashed)
+                            lblTxt = showConf ? "Bull Div " + str.tostring(conf) + "%" : "Bull Div"
+                            lastBullLabel := label.new(curBar, curRSI - 3, lblTxt, color=bullColor, textcolor=color.white, size=size.small, style=label.style_label_up)
+                            if conf >= alertMinConf
+                                alert("BULLISH RSI Divergence detected! Confidence: " + str.tostring(conf) + "%", alert.freq_once_per_bar_close)
+                            break
+
+// ============================================================
+// ヒドゥンダイバージェンス
+// ============================================================
+
+// Hidden Bearish: 価格LH + RSI HH → 下降トレンド継続
+if not na(swingHighPrice) and array.size(priceHighs) >= 2 and showHidden
+    curPrice = swingHighPrice
+    curBar   = bar_index - swingLB
+    [curRSI, curRSIBar] = f_findMatchingRSISwing(rsiHighBars, rsiHighs, curBar, 3)
+
+    if not na(curRSI)
+        for i = 1 to math.min(array.size(priceHighs) - 1, 5)
+            prevPrice = array.get(priceHighs, i)
+            prevBar   = array.get(priceHighBars, i)
+            [prevRSI, prevRSIBar] = f_findMatchingRSISwing(rsiHighBars, rsiHighs, prevBar, 3)
+
+            if not na(prevRSI)
+                if curPrice < prevPrice and curRSI > prevRSI
+                    if f_distance(prevBar, curBar) and f_rsiSig(prevRSI, curRSI) and f_priceSig(prevPrice, curPrice, atrVal)
+                        conf = f_confidence(prevRSI, curRSI, prevPrice, curPrice, prevBar, curBar, true)
+                        if conf >= math.max(minConf, 65)
+                            line.new(prevBar, prevRSI, curBar, curRSI, color=color.new(bearColor, 40), width=1, style=line.style_dotted)
+                            lblTxt = showConf ? "H.Bear " + str.tostring(conf) + "%" : "H.Bear"
+                            label.new(curBar, curRSI + 3, lblTxt, color=color.new(bearColor, 40), textcolor=color.white, size=size.tiny, style=label.style_label_down)
+                            if conf >= alertMinConf
+                                alert("HIDDEN BEARISH Divergence! Confidence: " + str.tostring(conf) + "%", alert.freq_once_per_bar_close)
+                            break
+
+// Hidden Bullish: 価格HL + RSI LL → 上昇トレンド継続
+if not na(swingLowPrice) and array.size(priceLows) >= 2 and showHidden
+    curPrice = swingLowPrice
+    curBar   = bar_index - swingLB
+    [curRSI, curRSIBar] = f_findMatchingRSISwing(rsiLowBars, rsiLows, curBar, 3)
+
+    if not na(curRSI)
+        for i = 1 to math.min(array.size(priceLows) - 1, 5)
+            prevPrice = array.get(priceLows, i)
+            prevBar   = array.get(priceLowBars, i)
+            [prevRSI, prevRSIBar] = f_findMatchingRSISwing(rsiLowBars, rsiLows, prevBar, 3)
+
+            if not na(prevRSI)
+                if curPrice > prevPrice and curRSI < prevRSI
+                    if f_distance(prevBar, curBar) and f_rsiSig(prevRSI, curRSI) and f_priceSig(prevPrice, curPrice, atrVal)
+                        conf = f_confidence(prevRSI, curRSI, prevPrice, curPrice, prevBar, curBar, false)
+                        if conf >= math.max(minConf, 65)
+                            line.new(prevBar, prevRSI, curBar, curRSI, color=color.new(bullColor, 40), width=1, style=line.style_dotted)
+                            lblTxt = showConf ? "H.Bull " + str.tostring(conf) + "%" : "H.Bull"
+                            label.new(curBar, curRSI - 3, lblTxt, color=color.new(bullColor, 40), textcolor=color.white, size=size.tiny, style=label.style_label_up)
+                            if conf >= alertMinConf
+                                alert("HIDDEN BULLISH Divergence! Confidence: " + str.tostring(conf) + "%", alert.freq_once_per_bar_close)
+                            break
+
+// ============================================================
+// RSI描画
+// ============================================================
+plot(rsiVal, "RSI", color=#A371F7, linewidth=2)
+hline(70, "Overbought", color=color.new(#F85149, 60), linestyle=hline.style_dashed)
+hline(50, "Midline", color=color.new(#484F58, 60), linestyle=hline.style_dotted)
+hline(30, "Oversold", color=color.new(#3FB950, 60), linestyle=hline.style_dashed)
+
+// 過熱/売られすぎゾーン背景
+bgcolor(rsiVal > 70 ? color.new(#F85149, 90) : na, title="Overbought Zone")
+bgcolor(rsiVal < 30 ? color.new(#3FB950, 90) : na, title="Oversold Zone")
