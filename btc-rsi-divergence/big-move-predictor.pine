@@ -43,6 +43,8 @@ lowColor    = input.color(color.new(#29B6F6, 0), "B Grade", group=grp6)
 showLabels  = input.bool(true, "Show Labels", group=grp6)
 showBG      = input.bool(true, "Show Background", group=grp6)
 showStats   = input.bool(true, "Show Hit Rate Stats", group=grp6)
+showForecast = input.bool(true, "Show Future Forecast", group=grp6)
+forecastBars = input.int(10, "Forecast Bars Forward", minval=3, maxval=30, group=grp6)
 
 grp7 = "Alerts"
 alertEnabled = input.bool(true, "Enable Alerts", group=grp7)
@@ -660,6 +662,131 @@ hitRate = totalSignals > 0 ? math.round(hitSignals / totalSignals * 100) : 0
 dirHitRate = totalDirSig > 0 ? math.round(hitDirSig / totalDirSig * 100) : 0
 
 // ============================================================
+//  未来予測エンジン
+// ============================================================
+
+// --- (F1) スクイーズ持続期間 → ブレイクアウトまでの残り本数を推定 ---
+var int sqzStartBar = 0
+var int lastSqzDuration = 0
+var int sqzDurSum = 0
+var int sqzDurCount = 0
+inSqueeze = kcSqueeze or bbSqueeze
+var bool wasSqueeze = false
+
+if inSqueeze and not wasSqueeze
+    sqzStartBar := bar_index
+if not inSqueeze and wasSqueeze
+    lastSqzDuration := bar_index - sqzStartBar
+    sqzDurSum += lastSqzDuration
+    sqzDurCount += 1
+wasSqueeze := inSqueeze
+
+currentSqzLen = inSqueeze ? bar_index - sqzStartBar : 0
+avgSqzDur = sqzDurCount > 0 ? math.round(sqzDurSum / sqzDurCount) : 15
+barsToBreakout = inSqueeze ? math.max(1, avgSqzDur - currentSqzLen) : 0
+
+// --- (F2) 予想変動幅（圧縮エネルギーベース）---
+// 圧縮が深いほど爆発力が大きい = ATR × 圧縮スコアの乗数
+compressionEnergy = (bbCompression + atrCompression + (kcSqueeze ? 1.0 : 0)) / 3.0
+energyMult = 1.5 + compressionEnergy * 2.5  // 1.5~4.0x ATR
+
+// スコアでさらに補正
+scoreMult = finalScore >= 80 ? 1.3 : finalScore >= 65 ? 1.15 : 1.0
+expectedMoveSize = atrVal * energyMult * scoreMult
+
+// --- (F3) ターゲット価格（3段階）---
+// T1=68%到達（1σ）, T2=50%到達（中央値）, T3=25%到達（2σ級）
+t1Move = expectedMoveSize * 0.6   // 保守的
+t2Move = expectedMoveSize * 1.0   // 中央
+t3Move = expectedMoveSize * 1.6   // 楽観的
+
+// 方向バイアスを適用
+dirMult = dirProb >= 60 ? (dirProb - 50) / 50.0 : 0.0  // 0~1
+
+// ブル方向ターゲット
+t1Up = close + t1Move * (1.0 + dirMult * 0.3)
+t2Up = close + t2Move * (1.0 + dirMult * 0.4)
+t3Up = close + t3Move * (1.0 + dirMult * 0.5)
+
+// ベア方向ターゲット
+t1Dn = close - t1Move * (1.0 + dirMult * 0.3)
+t2Dn = close - t2Move * (1.0 + dirMult * 0.4)
+t3Dn = close - t3Move * (1.0 + dirMult * 0.5)
+
+// 方向に応じた主要ターゲット
+primaryT1 = isBullDir ? t1Up : t1Dn
+primaryT2 = isBullDir ? t2Up : t2Dn
+primaryT3 = isBullDir ? t3Up : t3Dn
+
+// 到達確率（方向確率と圧縮エネルギーから算出）
+baseProb1 = 72.0   // T1は高確率
+baseProb2 = 48.0   // T2は中確率
+baseProb3 = 22.0   // T3は低確率
+probBoost = dirProb >= 70 ? (dirProb - 50) * 0.3 : 0  // 方向確信があれば確率アップ
+eBoost = compressionEnergy * 10.0  // 圧縮が深いほどブレイクアウト自体の確率アップ
+
+prob1 = math.min(95.0, math.round(baseProb1 + probBoost + eBoost))
+prob2 = math.min(80.0, math.round(baseProb2 + probBoost + eBoost))
+prob3 = math.min(50.0, math.round(baseProb3 + probBoost + eBoost * 0.5))
+
+// --- (F4) 予測タイムウィンドウ ---
+// ブレイクアウト後の動きは通常、スクイーズ期間の30-60%の期間で完結
+moveWindow = math.max(3, math.round(avgSqzDur * 0.45))
+
+// --- (F5) 予測精度トラッキング ---
+var int totalFcst = 0
+var int hitT1 = 0
+var int hitT2 = 0
+var float[] fcstPrices = array.new_float(0)
+var int[]   fcstBars   = array.new_int(0)
+var float[] fcstT1     = array.new_float(0)
+var float[] fcstT2     = array.new_float(0)
+var int[]   fcstDir    = array.new_int(0)
+var int[]   fcstWin    = array.new_int(0)
+
+if isNew and dirProb >= 60
+    totalFcst += 1
+    array.push(fcstPrices, close)
+    array.push(fcstBars, bar_index)
+    array.push(fcstT1, t1Move)
+    array.push(fcstT2, t2Move)
+    array.push(fcstDir, isBullDir ? 1 : -1)
+    array.push(fcstWin, moveWindow)
+
+if array.size(fcstBars) > 0
+    fcstRemove = array.new_int(0)
+    for i = 0 to array.size(fcstBars) - 1
+        fb = array.get(fcstBars, i)
+        fp = array.get(fcstPrices, i)
+        ft1 = array.get(fcstT1, i)
+        ft2 = array.get(fcstT2, i)
+        fd = array.get(fcstDir, i)
+        fw = array.get(fcstWin, i)
+        el = bar_index - fb
+        if el >= 1 and el <= fw
+            actualMove = fd == 1 ? high - fp : fp - low
+            if actualMove >= ft1
+                hitT1 += 1
+                if actualMove >= ft2
+                    hitT2 += 1
+                array.push(fcstRemove, i)
+        else if el > fw
+            array.push(fcstRemove, i)
+    if array.size(fcstRemove) > 0
+        for j = array.size(fcstRemove) - 1 to 0
+            idx = array.get(fcstRemove, j)
+            if idx < array.size(fcstBars)
+                array.remove(fcstBars, idx)
+                array.remove(fcstPrices, idx)
+                array.remove(fcstT1, idx)
+                array.remove(fcstT2, idx)
+                array.remove(fcstDir, idx)
+                array.remove(fcstWin, idx)
+
+fcstT1Rate = totalFcst > 0 ? math.round(hitT1 / totalFcst * 100) : 0
+fcstT2Rate = totalFcst > 0 ? math.round(hitT2 / totalFcst * 100) : 0
+
+// ============================================================
 //  描画
 // ============================================================
 // 背景ハイライト
@@ -703,13 +830,115 @@ if showLabels and isNew and dirProb >= 60
              color=color.new(#FF1744, 0), textcolor=#FFFFFF,
              size=arrowSize, style=label.style_label_down)
 
-// 予測レンジ（方向バイアス付き）
-expMove = atrVal * 3.0
-dirBias = dirProb >= 65 ? (dirProb - 50) / 50.0 : 0.0  // 0~1
-expUp = isBullDir ? expMove * (1.0 + dirBias * 0.5) : expMove * (1.0 - dirBias * 0.3)
-expDn = isBearDir ? expMove * (1.0 + dirBias * 0.5) : expMove * (1.0 - dirBias * 0.3)
-plot(isNew and finalScore >= 65 ? close + expUp : na, "Exp Upper", color=color.new(#00E676, 60), style=plot.style_circles)
-plot(isNew and finalScore >= 65 ? close - expDn : na, "Exp Lower", color=color.new(#FF1744, 60), style=plot.style_circles)
+// ============================================================
+//  未来予測の描画（ターゲットライン + 確率ゾーン）
+// ============================================================
+var line   fT1Line = na
+var line   fT2Line = na
+var line   fT3Line = na
+var line   fT1OppLine = na
+var linefill fZoneFill1 = na
+var linefill fZoneFill2 = na
+var label  fLabel1 = na
+var label  fLabel2 = na
+var label  fLabel3 = na
+var label  fTimeLbl = na
+var line   fTimeLine = na
+
+// 古い予測描画を削除
+if not na(fT1Line)
+    line.delete(fT1Line)
+if not na(fT2Line)
+    line.delete(fT2Line)
+if not na(fT3Line)
+    line.delete(fT3Line)
+if not na(fT1OppLine)
+    line.delete(fT1OppLine)
+if not na(fZoneFill1)
+    linefill.delete(fZoneFill1)
+if not na(fZoneFill2)
+    linefill.delete(fZoneFill2)
+if not na(fLabel1)
+    label.delete(fLabel1)
+if not na(fLabel2)
+    label.delete(fLabel2)
+if not na(fLabel3)
+    label.delete(fLabel3)
+if not na(fTimeLbl)
+    label.delete(fTimeLbl)
+if not na(fTimeLine)
+    line.delete(fTimeLine)
+
+// 最新バーかつスクイーズ中 or シグナル発生時に未来予測を描画
+if showForecast and barstate.islast and (isSignal or inSqueeze) and finalScore >= 40
+    endBar = bar_index + forecastBars
+
+    if isBullDir and dirProb >= 55
+        // ブル方向予測
+        fT1Line := line.new(bar_index, primaryT1, endBar, primaryT1,
+             color=color.new(#00E676, 30), width=2, style=line.style_dashed)
+        fT2Line := line.new(bar_index, primaryT2, endBar, primaryT2,
+             color=color.new(#00E676, 50), width=1, style=line.style_dotted)
+        fT3Line := line.new(bar_index, primaryT3, endBar, primaryT3,
+             color=color.new(#00E676, 70), width=1, style=line.style_dotted)
+        // 反対方向の小ターゲット
+        fT1OppLine := line.new(bar_index, t1Dn, endBar, t1Dn,
+             color=color.new(#FF1744, 70), width=1, style=line.style_dotted)
+
+        // 確率ゾーン塗りつぶし
+        auxLineTop = line.new(bar_index, primaryT1, endBar, primaryT1, color=na)
+        auxLineMid = line.new(bar_index, close, endBar, close, color=na)
+        auxLineT2 = line.new(bar_index, primaryT2, endBar, primaryT2, color=na)
+        fZoneFill1 := linefill.new(auxLineMid, auxLineTop, color.new(#00E676, 88))
+        fZoneFill2 := linefill.new(auxLineTop, auxLineT2, color.new(#00E676, 93))
+
+        // ラベル
+        fLabel1 := label.new(endBar, primaryT1,
+             "T1 " + str.tostring(primaryT1, format.mintick) + " (" + str.tostring(prob1) + "%)",
+             color=color.new(#00E676, 20), textcolor=#000000, size=size.tiny, style=label.style_label_left)
+        fLabel2 := label.new(endBar, primaryT2,
+             "T2 " + str.tostring(primaryT2, format.mintick) + " (" + str.tostring(prob2) + "%)",
+             color=color.new(#00E676, 50), textcolor=#000000, size=size.tiny, style=label.style_label_left)
+        fLabel3 := label.new(endBar, primaryT3,
+             "T3 " + str.tostring(primaryT3, format.mintick) + " (" + str.tostring(prob3) + "%)",
+             color=color.new(#00E676, 70), textcolor=#000000, size=size.tiny, style=label.style_label_left)
+
+    else if isBearDir and dirProb >= 55
+        // ベア方向予測
+        fT1Line := line.new(bar_index, primaryT1, endBar, primaryT1,
+             color=color.new(#FF1744, 30), width=2, style=line.style_dashed)
+        fT2Line := line.new(bar_index, primaryT2, endBar, primaryT2,
+             color=color.new(#FF1744, 50), width=1, style=line.style_dotted)
+        fT3Line := line.new(bar_index, primaryT3, endBar, primaryT3,
+             color=color.new(#FF1744, 70), width=1, style=line.style_dotted)
+        fT1OppLine := line.new(bar_index, t1Up, endBar, t1Up,
+             color=color.new(#00E676, 70), width=1, style=line.style_dotted)
+
+        auxLineBot = line.new(bar_index, primaryT1, endBar, primaryT1, color=na)
+        auxLineMid2 = line.new(bar_index, close, endBar, close, color=na)
+        auxLineT2b = line.new(bar_index, primaryT2, endBar, primaryT2, color=na)
+        fZoneFill1 := linefill.new(auxLineMid2, auxLineBot, color.new(#FF1744, 88))
+        fZoneFill2 := linefill.new(auxLineBot, auxLineT2b, color.new(#FF1744, 93))
+
+        fLabel1 := label.new(endBar, primaryT1,
+             "T1 " + str.tostring(primaryT1, format.mintick) + " (" + str.tostring(prob1) + "%)",
+             color=color.new(#FF1744, 20), textcolor=#FFFFFF, size=size.tiny, style=label.style_label_left)
+        fLabel2 := label.new(endBar, primaryT2,
+             "T2 " + str.tostring(primaryT2, format.mintick) + " (" + str.tostring(prob2) + "%)",
+             color=color.new(#FF1744, 50), textcolor=#FFFFFF, size=size.tiny, style=label.style_label_left)
+        fLabel3 := label.new(endBar, primaryT3,
+             "T3 " + str.tostring(primaryT3, format.mintick) + " (" + str.tostring(prob3) + "%)",
+             color=color.new(#FF1744, 70), textcolor=#FFFFFF, size=size.tiny, style=label.style_label_left)
+
+    // ブレイクアウト予測タイミング（縦線）
+    if inSqueeze and barsToBreakout > 0
+        breakBar = bar_index + barsToBreakout
+        fTimeLine := line.new(breakBar, low - atrVal * 3, breakBar, high + atrVal * 3,
+             color=color.new(#FFD600, 50), width=2, style=line.style_dashed)
+        fTimeLbl := label.new(breakBar, high + atrVal * 3.5,
+             "Breakout\n~" + str.tostring(barsToBreakout) + " bars",
+             color=color.new(#FFD600, 20), textcolor=#000000,
+             size=size.tiny, style=label.style_label_down)
 
 // ============================================================
 //  アラート
@@ -731,7 +960,7 @@ if alertEnabled and isNew
 // ============================================================
 //  ダッシュボード
 // ============================================================
-var table dash = table.new(position.top_right, 2, 19, bgcolor=color.new(#0D1117, 5), border_width=1, border_color=color.new(#30363D, 0))
+var table dash = table.new(position.top_right, 2, 24, bgcolor=color.new(#0D1117, 5), border_width=1, border_color=color.new(#30363D, 0))
 
 if barstate.islast
     // ヘッダー
@@ -813,3 +1042,32 @@ if barstate.islast
     // 適応型
     table.cell(dash, 0, 18, "Adapt Mult", text_color=#C9D1D9, text_size=size.tiny)
     table.cell(dash, 1, 18, str.tostring(adaptMult, "#.##") + "x", text_color=adaptMult > 1.0 ? #FFD600 : adaptMult < 1.0 ? #29B6F6 : #8B949E, text_size=size.tiny)
+
+    // === 未来予測セクション ===
+    table.cell(dash, 0, 19, "━ FORECAST ━", text_color=#E040FB, text_size=size.small)
+    table.cell(dash, 1, 19, "", text_color=#E040FB, text_size=size.small)
+
+    // ブレイクアウト予測
+    sqzTxt = inSqueeze ? "Squeeze " + str.tostring(currentSqzLen) + "bars → ~" + str.tostring(barsToBreakout) + " left" : "No Squeeze"
+    sqzCol2 = inSqueeze and barsToBreakout <= 3 ? #FF1744 : inSqueeze ? #FFD600 : #484F58
+    table.cell(dash, 0, 20, "Breakout ETA", text_color=#C9D1D9, text_size=size.tiny)
+    table.cell(dash, 1, 20, sqzTxt, text_color=sqzCol2, text_size=size.tiny)
+
+    // ターゲット価格
+    tDir = isBullDir and dirProb >= 55 ? "▲" : isBearDir and dirProb >= 55 ? "▼" : "—"
+    table.cell(dash, 0, 21, "Target T1", text_color=#C9D1D9, text_size=size.tiny)
+    table.cell(dash, 1, 21,
+         tDir + " " + str.tostring(primaryT1, format.mintick) + " (" + str.tostring(prob1) + "%)",
+         text_color=isBullDir ? #00E676 : isBearDir ? #FF1744 : #8B949E, text_size=size.tiny)
+
+    table.cell(dash, 0, 22, "Target T2", text_color=#C9D1D9, text_size=size.tiny)
+    table.cell(dash, 1, 22,
+         tDir + " " + str.tostring(primaryT2, format.mintick) + " (" + str.tostring(prob2) + "%)",
+         text_color=isBullDir ? #00E676 : isBearDir ? #FF1744 : #8B949E, text_size=size.tiny)
+
+    // 予測的中率
+    table.cell(dash, 0, 23, "Fcst Accuracy", text_color=#C9D1D9, text_size=size.tiny)
+    fCol = fcstT1Rate >= 60 ? #00E676 : fcstT1Rate >= 40 ? #FFD600 : #8B949E
+    table.cell(dash, 1, 23,
+         "T1:" + str.tostring(fcstT1Rate) + "% T2:" + str.tostring(fcstT2Rate) + "% (" + str.tostring(totalFcst) + ")",
+         text_color=fCol, text_size=size.tiny)
