@@ -21,37 +21,77 @@ def fetch_ohlcv(symbol="BTC_USDT", timeframe="4h"):
     cc_sym = symbol.split("_")[0]  # BTC_USDT → BTC
     cc_tsym = symbol.split("_")[1] if "_" in symbol else "USDT"
 
+    aggregate_4h = False
     if timeframe == "1D":
         cc_url = f"https://min-api.cryptocompare.com/data/v2/histoday?fsym={cc_sym}&tsym={cc_tsym}&limit=2000"
     elif timeframe == "1h":
         cc_url = f"https://min-api.cryptocompare.com/data/v2/histohour?fsym={cc_sym}&tsym={cc_tsym}&limit=2000"
-    else:  # 4h
-        cc_url = f"https://min-api.cryptocompare.com/data/v2/histohour?fsym={cc_sym}&tsym={cc_tsym}&limit=2000&aggregate=4"
+    else:  # 4h → 1hで2000本取得して4本ずつ集約
+        cc_url = f"https://min-api.cryptocompare.com/data/v2/histohour?fsym={cc_sym}&tsym={cc_tsym}&limit=2000"
+        aggregate_4h = True
 
     try:
-        req = urllib.request.Request(cc_url, headers={"User-Agent": "BacktestBot/1.0"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            raw = json.loads(resp.read())
-            candles = raw.get("Data", {}).get("Data", [])
-            if candles:
-                rows = []
-                for c in candles:
-                    if c.get("close", 0) == 0 and c.get("open", 0) == 0:
-                        continue
-                    rows.append({
-                        "ts": c.get("time", 0),
-                        "o": float(c.get("open", 0)),
-                        "h": float(c.get("high", 0)),
-                        "l": float(c.get("low", 0)),
-                        "c": float(c.get("close", 0)),
-                        "v": float(c.get("volumefrom", 0)),
+        # Paginate to get up to 4000 1H bars (= 1000 4H bars)
+        all_candles = []
+        toTs = ""
+        for page in range(2):  # 2 pages × 2000 = 4000 bars
+            page_url = cc_url if not toTs else f"{cc_url}&toTs={toTs}"
+            req = urllib.request.Request(page_url, headers={"User-Agent": "BacktestBot/1.0"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                raw = json.loads(resp.read())
+                candles = raw.get("Data", {}).get("Data", [])
+                if not candles:
+                    break
+                all_candles.extend(candles)
+                # Next page: oldest timestamp - 1
+                toTs = str(min(c.get("time", 0) for c in candles) - 1)
+                print(f"  [INFO] Page {page+1}: {len(candles)} candles fetched")
+
+        if all_candles:
+            # Deduplicate by timestamp
+            seen = set()
+            candles_deduped = []
+            for c in all_candles:
+                t = c.get("time", 0)
+                if t not in seen:
+                    seen.add(t)
+                    candles_deduped.append(c)
+
+            rows = []
+            for c in candles_deduped:
+                if c.get("close", 0) == 0 and c.get("open", 0) == 0:
+                    continue
+                rows.append({
+                    "ts": c.get("time", 0),
+                    "o": float(c.get("open", 0)),
+                    "h": float(c.get("high", 0)),
+                    "l": float(c.get("low", 0)),
+                    "c": float(c.get("close", 0)),
+                    "v": float(c.get("volumefrom", 0)),
+                })
+            rows.sort(key=lambda x: x["ts"])
+
+            # 1H → 4H 集約
+            if aggregate_4h and len(rows) >= 4:
+                agg = []
+                for k in range(0, len(rows) - 3, 4):
+                    chunk = rows[k:k + 4]
+                    agg.append({
+                        "ts": chunk[0]["ts"],
+                        "o": chunk[0]["o"],
+                        "h": max(c["h"] for c in chunk),
+                        "l": min(c["l"] for c in chunk),
+                        "c": chunk[-1]["c"],
+                        "v": sum(c["v"] for c in chunk),
                     })
-                rows.sort(key=lambda x: x["ts"])
-                if len(rows) >= 50:
-                    print(f"  [OK] CryptoCompare {timeframe} → {len(rows)} candles")
-                    return rows
-                else:
-                    print(f"  [WARN] CryptoCompare: only {len(rows)} candles")
+                rows = agg
+                print(f"  [INFO] Aggregated 1H → 4H: {len(rows)} candles")
+
+            if len(rows) >= 50:
+                print(f"  [OK] CryptoCompare {timeframe} → {len(rows)} candles")
+                return rows
+            else:
+                print(f"  [WARN] CryptoCompare: only {len(rows)} candles")
     except Exception as e:
         print(f"  [WARN] CryptoCompare: {e}")
 
@@ -431,9 +471,9 @@ def run_backtest(data, min_score=45, confirm_bars=5, slippage=0.001, commission=
     kcU, kcM, kcL = calc_kc(closes, highs, lows)
     volSMA = calc_ema(vols, 20)
 
-    # Walk-forward: train 70%, test 30%
-    split = int(n * 0.7)
-    test_start = max(split, 20)
+    # Walk-forward: train 50%, test 50% (more test data)
+    split = int(n * 0.5)
+    test_start = max(split, 25)
 
     # Stats
     total_signals = 0
@@ -455,7 +495,7 @@ def run_backtest(data, min_score=45, confirm_bars=5, slippage=0.001, commission=
 
         if score < min_score:
             continue
-        if (i - last_sig_bar) < 3:
+        if (i - last_sig_bar) < 2:
             continue
         last_sig_bar = i
 
@@ -600,7 +640,11 @@ if __name__ == "__main__":
 
     if data and len(data) >= 100:
         print(f"\nCryptoCompare実データ: {len(data)} bars")
-        run_backtest(data, min_score=40, confirm_bars=5)
+        # Multi-threshold comparison
+        for ms in [50, 40, 30, 20]:
+            print(f"\n{'='*60}")
+            print(f"閾値テスト: min_score={ms}")
+            run_backtest(data, min_score=ms, confirm_bars=5)
     else:
         # Fallback to embedded + sample
         embedded = get_embedded_data()
