@@ -13,3 +13,6 @@
 [submodule "oh-my-claudecode"]
 	path = oh-my-claudecode
 	url = https://github.com/Yeachan-Heo/oh-my-claudecode.git
+[submodule "autoagent"]
+	path = autoagent
+	url = https://github.com/kevinrgu/autoagent.git
