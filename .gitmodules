@@ -16,3 +16,6 @@
 [submodule "autoagent"]
 	path = autoagent
 	url = https://github.com/kevinrgu/autoagent.git
+[submodule "tradingview-mcp"]
+	path = tradingview-mcp
+	url = https://github.com/tradesdontlie/tradingview-mcp.git
