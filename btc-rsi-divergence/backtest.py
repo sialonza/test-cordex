@@ -635,22 +635,35 @@ def run_backtest(data, min_score=45, confirm_bars=5, slippage=0.001, commission=
 #  メイン
 # ============================================================
 if __name__ == "__main__":
-    print("BTC/USDT 4H データ取得中...")
-    data = fetch_ohlcv("BTC_USDT", "4h")
+    # === 4H テスト ===
+    print("=" * 60)
+    print("  BTC/USDT 4H バックテスト")
+    print("=" * 60)
+    print("データ取得中...")
+    data_4h = fetch_ohlcv("BTC_USDT", "4h")
 
-    if data and len(data) >= 100:
-        print(f"\nCryptoCompare実データ: {len(data)} bars")
-        # Multi-threshold comparison
-        for ms in [50, 40, 30, 20]:
+    if data_4h and len(data_4h) >= 100:
+        print(f"\n4H実データ: {len(data_4h)} bars")
+        for ms in [50, 40, 30]:
             print(f"\n{'='*60}")
-            print(f"閾値テスト: min_score={ms}")
-            run_backtest(data, min_score=ms, confirm_bars=5)
+            print(f"[4H] 閾値テスト: min_score={ms}")
+            run_backtest(data_4h, min_score=ms, confirm_bars=5)
+
+    # === 1D テスト ===
+    print("\n\n" + "#" * 60)
+    print("  BTC/USDT 1D (日足) バックテスト")
+    print("#" * 60)
+    print("データ取得中...")
+    data_1d = fetch_ohlcv("BTC_USDT", "1D")
+
+    if data_1d and len(data_1d) >= 100:
+        print(f"\n1D実データ: {len(data_1d)} bars")
+        for ms in [50, 40, 30]:
+            print(f"\n{'='*60}")
+            print(f"[1D] 閾値テスト: min_score={ms}")
+            run_backtest(data_1d, min_score=ms, confirm_bars=3)  # 日足は確認3本(3日)
     else:
-        # Fallback to embedded + sample
+        print(f"  [WARN] 1Dデータ不足、埋め込みデータ使用")
         embedded = get_embedded_data()
         print(f"\n埋め込み実データ: {len(embedded)} bars (BTC 1D)")
         run_backtest(embedded, min_score=20, confirm_bars=3)
-        print(f"\n{'='*60}")
-        print(f"サンプルデータ検証（500 bars）:")
-        sample = generate_sample_data(500)
-        run_backtest(sample, min_score=40, confirm_bars=5)
