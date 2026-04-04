@@ -347,21 +347,29 @@ def calc_squeeze_score(i, closes, highs, lows, opens, vols,
 #  方向予測（22因子・簡略版）
 # ============================================================
 def calc_direction(i, closes, highs, lows, opens, vols,
-                   rsi, ema9, ema21, atr, bbU, bbL, volSMA):
+                   rsi, ema9, ema21, atr, bbU, bbL, volSMA,
+                   is_daily=False):
     bullW = 0.0
     bearW = 0.0
 
-    # D1 RSI
-    if rsi[i] < 25: bullW += 5
-    elif rsi[i] < 30: bullW += 3.5
-    elif rsi[i] < 40: bullW += 1.5
-    if rsi[i] > 75: bearW += 5
-    elif rsi[i] > 70: bearW += 3.5
-    elif rsi[i] > 60: bearW += 1.5
+    # D1 RSI — 日足はレンジが狭いので閾値を緩和
+    if is_daily:
+        if rsi[i] < 35: bullW += 5
+        elif rsi[i] < 45: bullW += 2.5
+        if rsi[i] > 65: bearW += 5
+        elif rsi[i] > 55: bearW += 2.5
+    else:
+        if rsi[i] < 25: bullW += 5
+        elif rsi[i] < 30: bullW += 3.5
+        elif rsi[i] < 40: bullW += 1.5
+        if rsi[i] > 75: bearW += 5
+        elif rsi[i] > 70: bearW += 3.5
+        elif rsi[i] > 60: bearW += 1.5
 
-    # D2 RSI momentum
-    if i >= 3:
-        rm = rsi[i] - rsi[i - 3]
+    # D2 RSI momentum — 日足は5日間で見る
+    lookback = 5 if is_daily else 3
+    if i >= lookback:
+        rm = rsi[i] - rsi[i - lookback]
         if rm > 8: bullW += 3
         elif rm > 4: bullW += 1.5
         if rm < -8: bearW += 3
@@ -370,6 +378,12 @@ def calc_direction(i, closes, highs, lows, opens, vols,
     # D3 EMA alignment
     if ema9[i] > ema21[i]: bullW += 3
     else: bearW += 3
+
+    # D3b EMA slope (日足用追加: EMAの傾き方向)
+    if is_daily and i >= 5:
+        ema21_slope = ema21[i] - ema21[i - 5]
+        if ema21_slope > 0: bullW += 3
+        else: bearW += 3
 
     # D5 MACD (simplified as ema9-ema21)
     macd = ema9[i] - ema21[i]
@@ -380,34 +394,46 @@ def calc_direction(i, closes, highs, lows, opens, vols,
         if macd > 0 and macd > macd_prev: bullW += 2.5
         if macd < 0 and macd < macd_prev: bearW += 2.5
 
-    # D7 OBV trend (simplified)
+    # D7 OBV trend — 日足は40日で見る
+    obv_period = 40 if is_daily else 20
     if i >= 5:
         obv = 0
-        for j in range(max(0, i - 20), i + 1):
+        for j in range(max(0, i - obv_period), i + 1):
             if j > 0:
                 if closes[j] > closes[j - 1]: obv += vols[j]
                 elif closes[j] < closes[j - 1]: obv -= vols[j]
         if obv > 0: bullW += 2
         else: bearW += 2
 
-    # D8 Smart money
-    if i >= 3:
-        priceUp = closes[i] > closes[i - 3]
+    # D8 Smart money — 日足は5日前と比較
+    sm_lb = 5 if is_daily else 3
+    if i >= sm_lb:
+        priceUp = closes[i] > closes[i - sm_lb]
         volUp = vols[i] > volSMA[i] if volSMA[i] > 0 else False
         if priceUp and volUp: bullW += 3
         elif priceUp and not volUp: bearW += 1
         if not priceUp and volUp: bearW += 3
         elif not priceUp and not volUp: bullW += 1
 
-    # D10 Squeeze momentum
-    if i >= 20:
-        sqzMid = (max(highs[i - 19:i + 1]) + min(lows[i - 19:i + 1])) / 2
+    # D10 Squeeze momentum — 日足は40日
+    sqz_period = 40 if is_daily else 20
+    if i >= sqz_period:
+        sqzMid = (max(highs[i - sqz_period + 1:i + 1]) + min(lows[i - sqz_period + 1:i + 1])) / 2
         sqzMom = closes[i] - sqzMid
         if sqzMom > 0: bullW += 3
         else: bearW += 3
 
-    # D11 Market structure
-    if i >= 20:
+    # D11 Market structure — 日足は20/40日スイング
+    if is_daily and i >= 40:
+        swH1 = max(highs[max(0, i - 19):i + 1])
+        swL1 = min(lows[max(0, i - 19):i + 1])
+        swH2 = max(highs[max(0, i - 39):max(0, i - 19)])
+        swL2 = min(lows[max(0, i - 39):max(0, i - 19)])
+        if swH1 > swH2 and swL1 > swL2: bullW += 5
+        elif swL1 > swL2: bullW += 2.5
+        if swH1 < swH2 and swL1 < swL2: bearW += 5
+        elif swH1 < swH2: bearW += 2.5
+    elif not is_daily and i >= 20:
         swH1 = max(highs[max(0, i - 9):i + 1])
         swL1 = min(lows[max(0, i - 9):i + 1])
         swH2 = max(highs[max(0, i - 19):max(0, i - 9)])
@@ -417,13 +443,21 @@ def calc_direction(i, closes, highs, lows, opens, vols,
         if swH1 < swH2 and swL1 < swL2: bearW += 4
         elif swH1 < swH2: bearW += 2
 
-    # D12 ROC
-    if i >= 10:
-        roc = (closes[i] - closes[i - 10]) / closes[i - 10] * 100
-        if roc > 3: bullW += 2
+    # D12 ROC — 日足は20日ROC
+    roc_period = 20 if is_daily else 10
+    roc_thresh = 5 if is_daily else 3
+    if i >= roc_period:
+        roc = (closes[i] - closes[i - roc_period]) / closes[i - roc_period] * 100
+        if roc > roc_thresh: bullW += 2
         elif roc > 0: bullW += 0.5
-        if roc < -3: bearW += 2
+        if roc < -roc_thresh: bearW += 2
         elif roc < 0: bearW += 0.5
+
+    # D13 EMA200 position (日足用追加: 長期トレンド)
+    if is_daily and i >= 200:
+        ema200_approx = sum(closes[i - 199:i + 1]) / 200
+        if closes[i] > ema200_approx: bullW += 4
+        else: bearW += 4
 
     # D16 Engulfing
     if i > 0:
@@ -441,6 +475,13 @@ def calc_direction(i, closes, highs, lows, opens, vols,
         if bbPos > 0.9: bearW += 2
         elif bbPos > 0.7: bearW += 1
 
+    # D19 Consecutive candles (日足用追加: 連続陽線/陰線)
+    if is_daily and i >= 3:
+        bullCandles = sum(1 for j in range(3) if closes[i - j] > opens[i - j])
+        bearCandles = sum(1 for j in range(3) if closes[i - j] < opens[i - j])
+        if bullCandles == 3: bullW += 2
+        if bearCandles == 3: bearW += 2
+
     totalDir = bullW + bearW
     dirProb = round(max(bullW, bearW) / totalDir * 100) if totalDir > 0 else 50
     isBull = bullW > bearW
@@ -450,7 +491,7 @@ def calc_direction(i, closes, highs, lows, opens, vols,
 # ============================================================
 #  バックテスト実行
 # ============================================================
-def run_backtest(data, min_score=45, confirm_bars=5, slippage=0.001, commission=0.001):
+def run_backtest(data, min_score=45, confirm_bars=5, slippage=0.001, commission=0.001, is_daily=False):
     n = len(data)
     if n < 25:
         print("[ERROR] Not enough data (need 25+ bars)")
@@ -501,7 +542,7 @@ def run_backtest(data, min_score=45, confirm_bars=5, slippage=0.001, commission=
 
         isBull, dirProb, bullW, bearW = calc_direction(
             i, closes, highs, lows, opens, vols,
-            rsi, ema9, ema21, atr, bbU, bbL, volSMA)
+            rsi, ema9, ema21, atr, bbU, bbL, volSMA, is_daily=is_daily)
 
         total_signals += 1
 
@@ -658,10 +699,11 @@ if __name__ == "__main__":
 
     if data_1d and len(data_1d) >= 100:
         print(f"\n1D実データ: {len(data_1d)} bars")
-        for ms in [50, 40, 30]:
-            print(f"\n{'='*60}")
-            print(f"[1D] 閾値テスト: min_score={ms}")
-            run_backtest(data_1d, min_score=ms, confirm_bars=3)  # 日足は確認3本(3日)
+        for cb in [5, 7]:
+            for ms in [50, 40, 30]:
+                print(f"\n{'='*60}")
+                print(f"[1D] 閾値={ms}, 確認={cb}日")
+                run_backtest(data_1d, min_score=ms, confirm_bars=cb, is_daily=True)
     else:
         print(f"  [WARN] 1Dデータ不足、埋め込みデータ使用")
         embedded = get_embedded_data()
