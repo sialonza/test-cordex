@@ -13,48 +13,62 @@ from datetime import datetime
 #  データ取得（Crypto.com public API）
 # ============================================================
 def fetch_ohlcv(symbol="BTC_USDT", timeframe="4h"):
-    """Crypto.com public candlestick API - multiple timeframes for more data"""
+    """CryptoCompare API (無料、最大2000本) + Crypto.com フォールバック"""
+
+    # --- CryptoCompare (primary) ---
+    # 4h = histohour limit=2000 aggregate=4
+    # 1D = histoday limit=2000
+    cc_sym = symbol.split("_")[0]  # BTC_USDT → BTC
+    cc_tsym = symbol.split("_")[1] if "_" in symbol else "USDT"
+
+    if timeframe == "1D":
+        cc_url = f"https://min-api.cryptocompare.com/data/v2/histoday?fsym={cc_sym}&tsym={cc_tsym}&limit=2000"
+    elif timeframe == "1h":
+        cc_url = f"https://min-api.cryptocompare.com/data/v2/histohour?fsym={cc_sym}&tsym={cc_tsym}&limit=2000"
+    else:  # 4h
+        cc_url = f"https://min-api.cryptocompare.com/data/v2/histohour?fsym={cc_sym}&tsym={cc_tsym}&limit=2000&aggregate=4"
+
+    try:
+        req = urllib.request.Request(cc_url, headers={"User-Agent": "BacktestBot/1.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = json.loads(resp.read())
+            candles = raw.get("Data", {}).get("Data", [])
+            if candles:
+                rows = []
+                for c in candles:
+                    if c.get("close", 0) == 0 and c.get("open", 0) == 0:
+                        continue
+                    rows.append({
+                        "ts": c.get("time", 0),
+                        "o": float(c.get("open", 0)),
+                        "h": float(c.get("high", 0)),
+                        "l": float(c.get("low", 0)),
+                        "c": float(c.get("close", 0)),
+                        "v": float(c.get("volumefrom", 0)),
+                    })
+                rows.sort(key=lambda x: x["ts"])
+                if len(rows) >= 50:
+                    print(f"  [OK] CryptoCompare {timeframe} → {len(rows)} candles")
+                    return rows
+                else:
+                    print(f"  [WARN] CryptoCompare: only {len(rows)} candles")
+    except Exception as e:
+        print(f"  [WARN] CryptoCompare: {e}")
+
+    # --- Crypto.com fallback ---
     tf_map = {"1h": "1h", "4h": "4h", "1D": "1D"}
     tf = tf_map.get(timeframe, "4h")
-
-    # Crypto.com v1 API returns up to 50 candles per request
-    # Fetch multiple timeframes to get more data points
-    urls = [
-        f"https://api.crypto.com/exchange/v1/public/get-candlestick?instrument_name={symbol}&timeframe={tf}",
-    ]
-    # Also try v2 endpoint
-    urls.append(
-        f"https://api.crypto.com/v2/public/get-candlestick?instrument_name={symbol}&timeframe={tf}"
-    )
-
-    for url in urls:
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "BacktestBot/1.0"})
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                raw = json.loads(resp.read())
-
-                # v1 format: result.data[]
-                candles = raw.get("result", {}).get("data", [])
-                if not candles:
-                    # v2 format: result.data[]
-                    candles = raw.get("data", [])
-                if not candles:
-                    continue
-
+    cc_url2 = f"https://api.crypto.com/exchange/v1/public/get-candlestick?instrument_name={symbol}&timeframe={tf}"
+    try:
+        req = urllib.request.Request(cc_url2, headers={"User-Agent": "BacktestBot/1.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = json.loads(resp.read())
+            candles = raw.get("result", {}).get("data", [])
+            if candles:
                 rows = []
-                seen = set()
                 for c in candles:
-                    # Handle both key formats:
-                    # v1/MCP: {"open","high","low","close","volume","timestamp"}
-                    # v2:     {"o","h","l","c","v","t"}
-                    ts = c.get("t") or c.get("timestamp") or 0
-                    if isinstance(ts, str):
-                        ts = ts  # keep as string for dedup
-                    if ts in seen:
-                        continue
-                    seen.add(ts)
                     rows.append({
-                        "ts": ts,
+                        "ts": c.get("t") or c.get("timestamp") or 0,
                         "o": float(c.get("o") or c.get("open") or 0),
                         "h": float(c.get("h") or c.get("high") or 0),
                         "l": float(c.get("l") or c.get("low") or 0),
@@ -63,13 +77,12 @@ def fetch_ohlcv(symbol="BTC_USDT", timeframe="4h"):
                     })
                 rows.sort(key=lambda x: str(x["ts"]))
                 if len(rows) >= 10:
-                    print(f"  [OK] {url.split('?')[0].split('/')[-1]} → {len(rows)} candles")
+                    print(f"  [OK] Crypto.com {tf} → {len(rows)} candles")
                     return rows
-        except Exception as e:
-            print(f"  [WARN] {url}: {e}")
-            continue
+    except Exception as e:
+        print(f"  [WARN] Crypto.com: {e}")
 
-    print("[WARN] All API endpoints failed, using sample data")
+    print("  [FAIL] All APIs failed")
     return None
 
 
@@ -585,20 +598,15 @@ if __name__ == "__main__":
     print("BTC/USDT 4H データ取得中...")
     data = fetch_ohlcv("BTC_USDT", "4h")
 
-    # Merge API data + embedded data for maximum coverage
-    embedded = get_embedded_data()
-    all_data = embedded  # Start with 40 daily bars
-
-    if data:
-        # Add API 4H data (different granularity, but more signals)
-        all_data = embedded  # Use embedded as primary (more bars)
-
-    print(f"実データ: {len(all_data)} bars (BTC 1D, 2026-02-22 ~ 2026-04-02)")
-    print(f"\n[1/2] 日足バックテスト（全期間）:")
-    run_backtest(all_data, min_score=20, confirm_bars=3)
-
-    # Also run on sample data for statistical significance
-    print(f"\n{'='*60}")
-    print(f"[2/2] サンプルデータ統計検証（500 bars）:")
-    sample = generate_sample_data(500)
-    run_backtest(sample, min_score=40, confirm_bars=5)
+    if data and len(data) >= 100:
+        print(f"\nCryptoCompare実データ: {len(data)} bars")
+        run_backtest(data, min_score=40, confirm_bars=5)
+    else:
+        # Fallback to embedded + sample
+        embedded = get_embedded_data()
+        print(f"\n埋め込み実データ: {len(embedded)} bars (BTC 1D)")
+        run_backtest(embedded, min_score=20, confirm_bars=3)
+        print(f"\n{'='*60}")
+        print(f"サンプルデータ検証（500 bars）:")
+        sample = generate_sample_data(500)
+        run_backtest(sample, min_score=40, confirm_bars=5)
