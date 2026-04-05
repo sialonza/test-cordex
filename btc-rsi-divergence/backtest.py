@@ -512,6 +512,306 @@ def strat_macd_divergence(i, closes, highs, lows, ema9, ema21, rsi):
 
 
 # ============================================================
+#  戦略6: Momentum Burst v3 (Multi-Confluence Exhaustion Reversal)
+# ============================================================
+def strat_momentum_burst(i, closes, highs, lows, rsi, atr, ema9, ema21, ema50,
+                         bbU, bbB, bbL, vols, volSMA, opens):
+    """
+    Momentum Burst v3 — Ultra-Selective Exhaustion Reversal
+
+    Lessons from v1/v2: The market on 4H punishes almost any signal
+    that fires frequently. Only EXTREME setups with multiple confluences
+    have positive expectancy.
+
+    This version requires ALL of the following simultaneously:
+    1. Extreme extension: price > 2.5 ATR from 20-bar SMA
+    2. RSI extreme: < 25 or > 75 (true exhaustion territory)
+    3. Volume pattern: climax volume on ONE of last 3 bars (institutional
+       capitulation), but current bar volume is DECLINING (exhaustion)
+    4. Candlestick reversal pattern: engulfing or pin bar
+    5. BB penetration: price outside Bollinger Band (statistical extreme)
+
+    Additionally, we ONLY take the signal if the prior move was
+    large enough (> 3 ATR over last 8 bars) — we need a real burst
+    to have occurred, not a slow drift.
+
+    This will fire VERY rarely — maybe 2-8 times per 1000 bars —
+    but each signal carries extreme confluence.
+    """
+    if i < 30:
+        return None
+
+    a = atr[i] if atr[i] > 0 else closes[i] * 0.01
+    if a <= 0:
+        return None
+
+    # --- Pre-filter: Was there a real burst? ---
+    # Total move over last 8 bars must be > 2.5 ATR
+    move_8 = closes[i] - closes[max(0, i - 8)]
+    if abs(move_8) < a * 2.5:
+        return None
+
+    # --- 1. Extreme extension from mean ---
+    mean_20 = sum(closes[max(0, i - 19):i + 1]) / min(20, i + 1)
+    extension = (closes[i] - mean_20) / a
+
+    # --- 2. RSI extreme ---
+    rsi_val = rsi[i]
+
+    # --- 3. Volume pattern: climax in recent bars, declining now ---
+    had_climax = False
+    for j in range(1, 4):
+        if i - j >= 0 and volSMA[i] > 0:
+            if vols[i - j] > volSMA[i] * 1.8:
+                had_climax = True
+                break
+    vol_declining = vols[i] < vols[i - 1] if i > 0 else False
+
+    # --- 4. Candlestick reversal pattern ---
+    cur_body = closes[i] - opens[i]  # Positive = bullish
+    prev_body = closes[i - 1] - opens[i - 1]
+    upper_wick = highs[i] - max(closes[i], opens[i])
+    lower_wick = min(closes[i], opens[i]) - lows[i]
+    abs_body = abs(cur_body)
+
+    # Engulfing: current bar body engulfs previous bar body, opposite direction
+    bull_engulf = (cur_body > 0 and prev_body < 0 and
+                   abs_body > abs(prev_body) * 0.9 and
+                   abs_body > a * 0.3)
+    bear_engulf = (cur_body < 0 and prev_body > 0 and
+                   abs_body > abs(prev_body) * 0.9 and
+                   abs_body > a * 0.3)
+
+    # Pin bar / hammer: wick > 2x body
+    bull_pin = lower_wick > max(abs_body, a * 0.1) * 2.0 and cur_body >= 0
+    bear_pin = upper_wick > max(abs_body, a * 0.1) * 2.0 and cur_body <= 0
+
+    # --- 5. BB penetration ---
+    below_bb = closes[i] < bbL[i] or lows[i] < bbL[i]
+    above_bb = closes[i] > bbU[i] or highs[i] > bbU[i]
+
+    # === LONG (bullish reversal after bearish burst) ===
+    if move_8 < 0 and extension < -2.0:
+        score = 0
+        if rsi_val < 28: score += 1
+        if rsi_val < 20: score += 1  # Extra point for extreme
+        if had_climax and vol_declining: score += 1
+        if bull_engulf: score += 1
+        if bull_pin: score += 1
+        if below_bb: score += 1
+
+        # Need >= 3 points from 6 possible (demanding but achievable)
+        if score >= 3:
+            conf = 60 + score * 5
+            return ("LONG", min(90, conf))
+
+    # === SHORT (bearish reversal after bullish burst) ===
+    if move_8 > 0 and extension > 2.0:
+        score = 0
+        if rsi_val > 72: score += 1
+        if rsi_val > 80: score += 1
+        if had_climax and vol_declining: score += 1
+        if bear_engulf: score += 1
+        if bear_pin: score += 1
+        if above_bb: score += 1
+
+        if score >= 3:
+            conf = 60 + score * 5
+            return ("SHORT", min(90, conf))
+
+    return None
+
+
+# ============================================================
+#  戦略7: Adaptive Channel Mean-Reversion (自己調整チャネル回帰)
+# ============================================================
+def _adaptive_lookback(closes, highs, lows, atr, i, min_lb=10, max_lb=40):
+    """
+    Compute an adaptive lookback period based on volatility regime.
+
+    Uses volatility ratio + Kaufman efficiency ratio.
+    """
+    if i < max_lb + 5:
+        return 20
+
+    short_atr = sum(abs(highs[j] - lows[j]) for j in range(i - 4, i + 1)) / 5
+    long_atr = sum(abs(highs[j] - lows[j]) for j in range(i - 29, i + 1)) / 30
+    vol_ratio = short_atr / long_atr if long_atr > 0 else 1.0
+
+    direction = abs(closes[i] - closes[i - 20])
+    total_path = sum(abs(closes[j] - closes[j - 1]) for j in range(i - 19, i + 1))
+    efficiency = direction / total_path if total_path > 0 else 0
+
+    # High vol_ratio or high efficiency → shorter lookback
+    combined = 0.5 * min(vol_ratio, 2.0) / 2.0 + 0.5 * efficiency
+    lookback = int(max_lb - combined * (max_lb - min_lb))
+    return max(min_lb, min(max_lb, lookback))
+
+
+def strat_adaptive_channel(i, closes, highs, lows, rsi, atr, ema9, ema21, ema50,
+                           bbU, bbB, bbL, vols, volSMA, opens):
+    """
+    Adaptive Channel v3 — Regime-Aware Boundary Fade
+
+    Lessons from v1/v2: The channel concept is sound, but entries must
+    be ultra-selective. V2 still fired too often (18-23 trades) with
+    poor win rates.
+
+    V3 changes:
+    - ONLY trade in the "ranging" regime (low efficiency ratio).
+      In trending regimes, channel boundaries get blown through.
+    - Require TWO consecutive rejection bars at the boundary
+      (single-bar rejections have too high failure rate)
+    - Require RSI divergence at the boundary (price makes new
+      channel extreme but RSI doesn't — exhaustion signal)
+    - Use Bollinger Band %B as additional overextension measure
+
+    The adaptive lookback is retained but now also determines whether
+    to trade at all: if the lookback is very short (trending market),
+    we skip entirely.
+    """
+    if i < 55:
+        return None
+
+    a = atr[i] if atr[i] > 0 else closes[i] * 0.01
+    if a <= 0:
+        return None
+
+    # --- Regime detection ---
+    lb = _adaptive_lookback(closes, highs, lows, atr, i)
+
+    # If lookback is short (< 15), market is trending — skip
+    if lb < 15:
+        return None
+
+    # Also compute efficiency ratio directly
+    direction = abs(closes[i] - closes[i - 20])
+    total_path = sum(abs(closes[j] - closes[j - 1]) for j in range(i - 19, i + 1))
+    efficiency = direction / total_path if total_path > 0 else 0
+
+    # Only trade in ranging regime (efficiency < 0.35)
+    if efficiency > 0.35:
+        return None
+
+    # --- Build channel ---
+    chan_high = max(highs[i - lb:i])
+    chan_low = min(lows[i - lb:i])
+    chan_mid = (chan_high + chan_low) / 2
+    chan_width = chan_high - chan_low
+
+    if chan_width <= 0 or chan_width < a * 1.0:
+        return None
+
+    # --- Price at boundary? ---
+    at_upper = highs[i] >= chan_high - a * 0.3
+    at_lower = lows[i] <= chan_low + a * 0.3
+
+    if not at_upper and not at_lower:
+        return None
+
+    # --- Candlestick analysis ---
+    upper_wick = highs[i] - max(closes[i], opens[i])
+    lower_wick = min(closes[i], opens[i]) - lows[i]
+    body = abs(closes[i] - opens[i])
+    prev_upper_wick = highs[i-1] - max(closes[i-1], opens[i-1])
+    prev_lower_wick = min(closes[i-1], opens[i-1]) - lows[i-1]
+    prev_body = abs(closes[i-1] - opens[i-1])
+
+    # --- BB %B as overextension measure ---
+    bb_width = bbU[i] - bbL[i]
+    bb_pctb = (closes[i] - bbL[i]) / bb_width if bb_width > 0 else 0.5
+
+    # === SHORT at upper boundary ===
+    if at_upper:
+        score = 0
+
+        # Rejection wick on current bar
+        if upper_wick > max(body, a * 0.05) * 1.0:
+            score += 1
+
+        # Two-bar rejection pattern (both bars rejected at top)
+        prev_at_upper = highs[i-1] >= chan_high - a * 0.5
+        if prev_at_upper and prev_upper_wick > max(prev_body, a * 0.05) * 0.8:
+            score += 1
+
+        # Close back inside channel
+        if closes[i] < chan_high:
+            score += 1
+
+        # Bearish close
+        if closes[i] < opens[i]:
+            score += 1
+
+        # RSI overbought
+        if rsi[i] > 65:
+            score += 1
+        if rsi[i] > 75:
+            score += 1
+
+        # RSI divergence: price at/near high but RSI lower than recent
+        if i >= 10:
+            recent_rsi_high = max(rsi[max(0, i-10):i])
+            if rsi[i] < recent_rsi_high - 5 and highs[i] >= max(highs[max(0,i-10):i]) * 0.998:
+                score += 1  # Bearish RSI divergence
+
+        # BB %B > 0.95 (well above upper band)
+        if bb_pctb > 0.90:
+            score += 1
+
+        # Low volume (false breakout indicator)
+        if volSMA[i] > 0 and vols[i] < volSMA[i] * 1.0:
+            score += 1
+
+        # Need 4+ out of 9 possible
+        if score >= 4:
+            room = (closes[i] - chan_mid) / a
+            if room > 0.3:
+                conf = 55 + score * 4
+                return ("SHORT", min(90, conf))
+
+    # === LONG at lower boundary ===
+    if at_lower:
+        score = 0
+
+        if lower_wick > max(body, a * 0.05) * 1.0:
+            score += 1
+
+        prev_at_lower = lows[i-1] <= chan_low + a * 0.5
+        if prev_at_lower and prev_lower_wick > max(prev_body, a * 0.05) * 0.8:
+            score += 1
+
+        if closes[i] > chan_low:
+            score += 1
+
+        if closes[i] > opens[i]:
+            score += 1
+
+        if rsi[i] < 35:
+            score += 1
+        if rsi[i] < 25:
+            score += 1
+
+        if i >= 10:
+            recent_rsi_low = min(rsi[max(0, i-10):i])
+            if rsi[i] > recent_rsi_low + 5 and lows[i] <= min(lows[max(0,i-10):i]) * 1.002:
+                score += 1
+
+        if bb_pctb < 0.10:
+            score += 1
+
+        if volSMA[i] > 0 and vols[i] < volSMA[i] * 1.0:
+            score += 1
+
+        if score >= 4:
+            room = (chan_mid - closes[i]) / a
+            if room > 0.3:
+                conf = 55 + score * 4
+                return ("LONG", min(90, conf))
+
+    return None
+
+
+# ============================================================
 #  統一バックテストエンジン
 # ============================================================
 def run_strategy(name, data, signal_func, sl_atr=1.5, tp_atr=2.0, trail_atr=1.2,
@@ -699,6 +999,12 @@ if __name__ == "__main__":
     def sig_macd_div(i, C, H, L, rsi, atr, e9, e21, e50, bbU, bbB, bbL, vol, volSMA, O):
         return strat_macd_divergence(i, C, H, L, e9, e21, rsi)
 
+    def sig_mom_burst(i, C, H, L, rsi, atr, e9, e21, e50, bbU, bbB, bbL, vol, volSMA, O):
+        return strat_momentum_burst(i, C, H, L, rsi, atr, e9, e21, e50, bbU, bbB, bbL, vol, volSMA, O)
+
+    def sig_adapt_chan(i, C, H, L, rsi, atr, e9, e21, e50, bbU, bbB, bbL, vol, volSMA, O):
+        return strat_adaptive_channel(i, C, H, L, rsi, atr, e9, e21, e50, bbU, bbB, bbL, vol, volSMA, O)
+
     strategies = [
         # 押し目/戻り改良版のパラメータ探索
         ("PB-A タイト",     sig_pullback,   1.2, 1.5, 1.0, 8),
@@ -713,6 +1019,24 @@ if __name__ == "__main__":
         ("EMAクロス",       sig_ema_cross,  1.5, 2.0, 1.2, 12),
         ("RSI極端値",       sig_rsi_extreme,1.5, 2.0, 1.2, 8),
         ("MACDダイバ",      sig_macd_div,   1.5, 2.0, 1.2, 12),
+        # --- NEW: Momentum Burst v3 (Exhaustion Reversal) ---
+        ("MB-A タイト",     sig_mom_burst,  1.0, 1.5, 0.8, 6),
+        ("MB-B 標準",       sig_mom_burst,  1.5, 2.0, 1.2, 8),
+        ("MB-C 広幅",       sig_mom_burst,  2.0, 3.0, 1.5, 12),
+        ("MB-D RR重視",     sig_mom_burst,  1.0, 3.0, 1.0, 10),
+        ("MB-E 即利確",     sig_mom_burst,  1.2, 1.0, 0.8, 4),
+        ("MB-F 広SL",       sig_mom_burst,  2.5, 2.0, 2.0, 10),
+        ("MB-G 超広SL",     sig_mom_burst,  3.0, 2.5, 2.5, 15),
+        ("MB-H ミドル",     sig_mom_burst,  1.8, 2.5, 1.5, 8),
+        # --- NEW: Adaptive Channel v3 (Regime-Aware Fade) ---
+        ("AC-A タイト",     sig_adapt_chan,  1.0, 1.5, 0.8, 6),
+        ("AC-B 標準",       sig_adapt_chan,  1.5, 2.0, 1.2, 8),
+        ("AC-C 広幅",       sig_adapt_chan,  2.0, 3.0, 1.5, 12),
+        ("AC-D RR重視",     sig_adapt_chan,  1.0, 3.0, 1.0, 10),
+        ("AC-E 即利確",     sig_adapt_chan,  1.2, 1.0, 0.8, 4),
+        ("AC-F 広SL",       sig_adapt_chan,  2.5, 2.0, 2.0, 10),
+        ("AC-G 超広SL",     sig_adapt_chan,  3.0, 2.5, 2.5, 15),
+        ("AC-H ミドル",     sig_adapt_chan,  1.8, 2.5, 1.5, 8),
     ]
 
     all_results = []
