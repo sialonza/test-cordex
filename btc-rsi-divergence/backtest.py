@@ -526,10 +526,11 @@ def run_backtest(data, min_score=45, is_daily=False,
     test_start = max(split, 50)
 
     # Trade tracking
-    trades = []  # list of {entry, exit, pnl, bars, exit_reason, dir, score, dirProb}
+    trades = []
     last_sig_bar = -10
     in_trade = False
     trade = {}
+    run_backtest._alerts = []  # reset
 
     for i in range(test_start, n):
         # --- 既存ポジション管理 ---
@@ -594,78 +595,93 @@ def run_backtest(data, min_score=45, is_daily=False,
                     in_trade = False
                     continue
 
-        # --- 新規シグナル検出 ---
+        # --- 新規シグナル検出（2段階方式）---
+        # Stage 1: スクイーズ検知 → アラート状態にする
+        # Stage 2: BBバンド突破で初めてエントリー
         if in_trade:
             continue
-        if i >= n - 3:
-            continue
-        if (i - last_sig_bar) < 3:
+        if i >= n - 2:
             continue
 
         score, kcSqz, bbSqz, atrComp = calc_squeeze_score(
             i, closes, highs, lows, opens, vols,
             bbU, bbB, bbL, kcU, kcM, kcL, atr, rsi, ema9, ema21, volSMA)
 
-        if score < min_score:
+        # スクイーズ検知: アラート状態を記録
+        if score >= min_score:
+            # 直近でスクイーズが検知されたことを記録（alert_barリストに追加）
+            if not hasattr(run_backtest, '_alerts'):
+                run_backtest._alerts = []
+            run_backtest._alerts.append(i)
+
+        # BBブレイクアウト確認: 過去N本以内にスクイーズがあったか？
+        breakout_window = 8  # スクイーズ後8本以内のBB突破を待つ
+        recent_squeeze = False
+        recent_score = 0
+        for lookback_j in range(1, breakout_window + 1):
+            past_i = i - lookback_j
+            if past_i < test_start:
+                continue
+            past_score, _, _, _ = calc_squeeze_score(
+                past_i, closes, highs, lows, opens, vols,
+                bbU, bbB, bbL, kcU, kcM, kcL, atr, rsi, ema9, ema21, volSMA)
+            if past_score >= min_score:
+                recent_squeeze = True
+                recent_score = max(recent_score, past_score)
+                break
+
+        if not recent_squeeze:
             continue
 
-        isBull, dirProb, bullW, bearW = calc_direction(
+        # BBブレイクアウト判定
+        bb_up = closes[i] > bbU[i]    # BB上突破
+        bb_dn = closes[i] < bbL[i]    # BB下突破
+
+        if not bb_up and not bb_dn:
+            continue
+
+        # クールダウン
+        if (i - last_sig_bar) < 5:
+            continue
+
+        # 逆張り: BB上突破→SHORT（過熱→反落）、BB下突破→LONG（売られ過ぎ→反発）
+        isBull = bb_dn  # 下突破ならLONG（逆張り）
+
+        # 方向予測は参考程度（逆張りなので一致不要）
+        dirBull, dirProb, bullW, bearW = calc_direction(
             i, closes, highs, lows, opens, vols,
             rsi, ema9, ema21, atr, bbU, bbL, volSMA, is_daily=is_daily)
 
-        # 確信度フィルタ
-        if dirProb < min_dir_prob:
-            continue
-
-        # トレンドフィルタ: EMA21の傾きと逆方向はスキップ
-        if i >= 5:
-            ema_slope = ema21[i] - ema21[i - 5]
-            if isBull and ema_slope < -closes[i] * 0.001:  # 下降トレンドでLongは禁止
-                continue
-            if not isBull and ema_slope > closes[i] * 0.001:  # 上昇トレンドでShortは禁止
-                continue
-
-        # 日足Long onlyフィルタ (Shortが一貫して負けるため)
-        if is_daily and not isBull:
-            continue
-
-        # 次足確認: シグナル足の方向と次足の始値→終値が一致しなければスキップ
-        if i + 1 < n:
-            next_bull = closes[i + 1] > opens[i + 1]
-            if isBull and not next_bull:
-                continue
-            if not isBull and next_bull:
-                continue
+        # 逆張りでは確信度・トレンド・方向フィルタは不要
+        # （ブレイクアウトの逆を突くため）
 
         last_sig_bar = i
-        entry_bar = i + 1  # 次足の終値でエントリー（確認後）
-        if entry_bar >= n:
-            continue
         entry_atr = atr[i] if atr[i] > 0 else closes[i] * 0.01
 
-        # SL: ATRベース + スイングLow/High の遠い方を採用（浅すぎ防止）
-        swing_lookback = 10
-        if isBull:
-            entry_price = closes[entry_bar] * (1 + slippage)
-            atr_sl = entry_price - entry_atr * sl_atr_mult
-            swing_sl = min(lows[max(0, i - swing_lookback):i + 1])  # 直近安値
-            sl = min(atr_sl, swing_sl)  # より遠い（深い）方を採用
-            tp = entry_price + entry_atr * tp_atr_mult
+        # 逆張りSL/TP設定
+        # TP = BB basis（中央線）への回帰を狙う
+        # SL = ブレイクアウト方向にATR倍率
+        if isBull:  # BB下突破 → LONG（反発狙い）
+            entry_price = closes[i] * (1 + slippage)
+            sl = entry_price - entry_atr * sl_atr_mult
+            tp = bbB[i]  # BB中央線まで戻ると利確
+            if tp <= entry_price:
+                tp = entry_price + entry_atr * tp_atr_mult  # fallback
             trade = {
-                "dir": "LONG", "entry_bar": entry_bar, "entry_price": entry_price,
+                "dir": "LONG", "entry_bar": i, "entry_price": entry_price,
                 "sl": sl, "tp": tp, "trail_stop": sl,
-                "score": score, "dirProb": dirProb
+                "score": recent_score, "dirProb": dirProb
             }
-        else:
-            entry_price = closes[entry_bar] * (1 - slippage)
-            atr_sl = entry_price + entry_atr * sl_atr_mult
-            swing_sl = max(highs[max(0, i - swing_lookback):i + 1])  # 直近高値
-            sl = max(atr_sl, swing_sl)  # より遠い（深い）方を採用
-            tp = entry_price - entry_atr * tp_atr_mult
+        else:  # BB上突破 → SHORT（反落狙い）
+            entry_price = closes[i] * (1 - slippage)
+            sl = entry_price + entry_atr * sl_atr_mult
+            tp = bbB[i]  # BB中央線まで戻ると利確
+            if tp >= entry_price:
+                tp = entry_price - entry_atr * tp_atr_mult  # fallback
             trade = {
-                "dir": "SHORT", "entry_bar": entry_bar, "entry_price": entry_price,
+                "dir": "SHORT", "entry_bar": i, "entry_price": entry_price,
                 "sl": sl, "tp": tp, "trail_stop": sl,
-                "score": score, "dirProb": dirProb
+                "score": recent_score, "dirProb": dirProb
             }
         in_trade = True
 
@@ -680,6 +696,7 @@ def run_backtest(data, min_score=45, is_daily=False,
     print(f"  最小スコア: {min_score}%  最小確信度: {min_dir_prob}%")
     print(f"  SL: {sl_atr_mult}×ATR  TP: {tp_atr_mult}×ATR  Trail: {trail_atr_mult}×ATR")
     print(f"  最大保有:   {max_hold}本  Slip: {slippage*100:.1f}%  手数料: {commission*100:.1f}%")
+    print(f"  エントリー: スクイーズ→BB突破逆張り（平均回帰）")
 
     if not trades:
         print(f"\n  シグナルなし")
@@ -884,62 +901,41 @@ def run_backtest(data, min_score=45, is_daily=False,
 if __name__ == "__main__":
     results = []
 
-    # 4H-C推奨設定（固定）
-    CFG = {"ms": 30, "mdp": 55, "sl": 2.5, "tp": 3.0, "tr": 2.0, "mh": 15}
-
-    # === BTC 4H (8000 1H bars → 2000 4H bars) ===
     print("#" * 60)
-    print("  大量データ検証: 4H-C設定は本当に勝てるか？")
+    print("  戦略改修テスト: BB突破 + 即利確 vs 逆張り")
     print("#" * 60)
 
-    print("\n[1] BTC 4H...")
-    data = fetch_ohlcv("BTC_USDT", "4h")
-    if data and len(data) >= 100:
-        print(f"  → {len(data)} bars")
-        r = run_backtest(data, min_score=CFG["ms"], is_daily=False,
-                         sl_atr_mult=CFG["sl"], tp_atr_mult=CFG["tp"],
-                         trail_atr_mult=CFG["tr"], max_hold=CFG["mh"], min_dir_prob=CFG["mdp"])
-        if r: results.append(("BTC 4H", r))
+    # BTC 4Hデータ取得
+    print("\nBTC 4H データ取得中...")
+    data_4h = fetch_ohlcv("BTC_USDT", "4h")
 
-    # === BTC 1H (8000 bars直接) ===
-    print(f"\n[2] BTC 1H...")
-    data_1h = fetch_ohlcv("BTC_USDT", "1h")
-    if data_1h and len(data_1h) >= 100:
-        print(f"  → {len(data_1h)} bars")
-        r = run_backtest(data_1h, min_score=CFG["ms"], is_daily=False,
-                         sl_atr_mult=CFG["sl"], tp_atr_mult=CFG["tp"],
-                         trail_atr_mult=CFG["tr"], max_hold=CFG["mh"]*4, min_dir_prob=CFG["mdp"])
-        if r: results.append(("BTC 1H", r))
+    if data_4h and len(data_4h) >= 100:
+        print(f"  → {len(data_4h)} bars")
 
-    # === ETH 4H ===
-    print(f"\n[3] ETH 4H...")
-    data_eth = fetch_ohlcv("ETH_USDT", "4h")
-    if data_eth and len(data_eth) >= 100:
-        print(f"  → {len(data_eth)} bars")
-        r = run_backtest(data_eth, min_score=CFG["ms"], is_daily=False,
-                         sl_atr_mult=CFG["sl"], tp_atr_mult=CFG["tp"],
-                         trail_atr_mult=CFG["tr"], max_hold=CFG["mh"], min_dir_prob=CFG["mdp"])
-        if r: results.append(("ETH 4H", r))
+        # 戦略A: 即利確型（TP 1.0×ATR, SL 1.5×ATR）
+        configs = [
+            ("A1 即利確",     30, 55, 1.5, 1.0, 0.8, 5),
+            ("A2 即利確広SL", 30, 55, 2.0, 1.0, 0.8, 5),
+            ("A3 即利確+高確信", 30, 62, 1.5, 1.0, 0.8, 5),
+            ("A4 微利確",     25, 52, 1.0, 0.5, 0.5, 3),
+            ("A5 TP1.5",     30, 55, 2.0, 1.5, 1.2, 8),
+        ]
+        for label, ms, mdp, sl, tp, tr, mh in configs:
+            r = run_backtest(data_4h, min_score=ms, is_daily=False,
+                             sl_atr_mult=sl, tp_atr_mult=tp,
+                             trail_atr_mult=tr, max_hold=mh, min_dir_prob=mdp)
+            if r: results.append((label, r))
 
-    # === SOL 4H ===
-    print(f"\n[4] SOL 4H...")
-    data_sol = fetch_ohlcv("SOL_USDT", "4h")
-    if data_sol and len(data_sol) >= 100:
-        print(f"  → {len(data_sol)} bars")
-        r = run_backtest(data_sol, min_score=CFG["ms"], is_daily=False,
-                         sl_atr_mult=CFG["sl"], tp_atr_mult=CFG["tp"],
-                         trail_atr_mult=CFG["tr"], max_hold=CFG["mh"], min_dir_prob=CFG["mdp"])
-        if r: results.append(("SOL 4H", r))
-
-    # === BTC 1D ===
-    print(f"\n[5] BTC 1D...")
-    data_1d = fetch_ohlcv("BTC_USDT", "1D")
-    if data_1d and len(data_1d) >= 100:
-        print(f"  → {len(data_1d)} bars")
-        r = run_backtest(data_1d, min_score=CFG["ms"], is_daily=True,
-                         sl_atr_mult=3.0, tp_atr_mult=99.0,
-                         trail_atr_mult=1.5, max_hold=20, min_dir_prob=52)
-        if r: results.append(("BTC 1D", r))
+    # ETH, SOLも即利確型で
+    for sym, name in [("ETH_USDT", "ETH"), ("SOL_USDT", "SOL")]:
+        print(f"\n{name} 4H データ取得中...")
+        d = fetch_ohlcv(sym, "4h")
+        if d and len(d) >= 100:
+            print(f"  → {len(d)} bars")
+            r = run_backtest(d, min_score=30, is_daily=False,
+                             sl_atr_mult=1.5, tp_atr_mult=1.0,
+                             trail_atr_mult=0.8, max_hold=5, min_dir_prob=55)
+            if r: results.append((f"{name} 即利確", r))
 
     # === 総合サマリー ===
     if results:
