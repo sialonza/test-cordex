@@ -34,7 +34,7 @@ def fetch_ohlcv(symbol="BTC_USDT", timeframe="4h"):
         # Paginate to get up to 4000 1H bars (= 1000 4H bars)
         all_candles = []
         toTs = ""
-        for page in range(2):  # 2 pages × 2000 = 4000 bars
+        for page in range(4):  # 4 pages × 2000 = 8000 bars max
             page_url = cc_url if not toTs else f"{cc_url}&toTs={toTs}"
             req = urllib.request.Request(page_url, headers={"User-Agent": "BacktestBot/1.0"})
             with urllib.request.urlopen(req, timeout=15) as resp:
@@ -884,64 +884,78 @@ def run_backtest(data, min_score=45, is_daily=False,
 if __name__ == "__main__":
     results = []
 
-    # === 4H テスト ===
-    print("#" * 60)
-    print("  BTC/USDT 4H 実戦バックテスト")
-    print("#" * 60)
-    print("データ取得中...")
-    data_4h = fetch_ohlcv("BTC_USDT", "4h")
+    # 4H-C推奨設定（固定）
+    CFG = {"ms": 30, "mdp": 55, "sl": 2.5, "tp": 3.0, "tr": 2.0, "mh": 15}
 
-    if data_4h and len(data_4h) >= 100:
-        print(f"\n4H実データ: {len(data_4h)} bars")
-        configs_4h = [
-            # (label, min_score, min_dir_prob, sl, tp, trail, max_hold)
-            ("4H-A 堅実",   35, 60, 1.5, 2.0, 1.5, 10),
-            ("4H-B 標準",   30, 58, 2.0, 2.5, 1.8, 12),
-            ("4H-C 広幅",   30, 55, 2.5, 3.0, 2.0, 15),
-            ("4H-D 低閾値", 25, 55, 2.0, 2.5, 1.8, 12),
-        ]
-        for label, ms, mdp, sl, tp, tr, mh in configs_4h:
-            print(f"\n{'='*60}")
-            print(f"[{label}] score≥{ms} prob≥{mdp} SL{sl} TP{tp}")
-            r = run_backtest(data_4h, min_score=ms, is_daily=False,
-                             sl_atr_mult=sl, tp_atr_mult=tp, trail_atr_mult=tr,
-                             max_hold=mh, min_dir_prob=mdp)
-            if r:
-                results.append((label, r))
-
-    # === 1D テスト ===
-    print(f"\n\n{'#'*60}")
-    print("  BTC/USDT 1D 実戦バックテスト")
+    # === BTC 4H (8000 1H bars → 2000 4H bars) ===
     print("#" * 60)
-    print("データ取得中...")
+    print("  大量データ検証: 4H-C設定は本当に勝てるか？")
+    print("#" * 60)
+
+    print("\n[1] BTC 4H...")
+    data = fetch_ohlcv("BTC_USDT", "4h")
+    if data and len(data) >= 100:
+        print(f"  → {len(data)} bars")
+        r = run_backtest(data, min_score=CFG["ms"], is_daily=False,
+                         sl_atr_mult=CFG["sl"], tp_atr_mult=CFG["tp"],
+                         trail_atr_mult=CFG["tr"], max_hold=CFG["mh"], min_dir_prob=CFG["mdp"])
+        if r: results.append(("BTC 4H", r))
+
+    # === BTC 1H (8000 bars直接) ===
+    print(f"\n[2] BTC 1H...")
+    data_1h = fetch_ohlcv("BTC_USDT", "1h")
+    if data_1h and len(data_1h) >= 100:
+        print(f"  → {len(data_1h)} bars")
+        r = run_backtest(data_1h, min_score=CFG["ms"], is_daily=False,
+                         sl_atr_mult=CFG["sl"], tp_atr_mult=CFG["tp"],
+                         trail_atr_mult=CFG["tr"], max_hold=CFG["mh"]*4, min_dir_prob=CFG["mdp"])
+        if r: results.append(("BTC 1H", r))
+
+    # === ETH 4H ===
+    print(f"\n[3] ETH 4H...")
+    data_eth = fetch_ohlcv("ETH_USDT", "4h")
+    if data_eth and len(data_eth) >= 100:
+        print(f"  → {len(data_eth)} bars")
+        r = run_backtest(data_eth, min_score=CFG["ms"], is_daily=False,
+                         sl_atr_mult=CFG["sl"], tp_atr_mult=CFG["tp"],
+                         trail_atr_mult=CFG["tr"], max_hold=CFG["mh"], min_dir_prob=CFG["mdp"])
+        if r: results.append(("ETH 4H", r))
+
+    # === SOL 4H ===
+    print(f"\n[4] SOL 4H...")
+    data_sol = fetch_ohlcv("SOL_USDT", "4h")
+    if data_sol and len(data_sol) >= 100:
+        print(f"  → {len(data_sol)} bars")
+        r = run_backtest(data_sol, min_score=CFG["ms"], is_daily=False,
+                         sl_atr_mult=CFG["sl"], tp_atr_mult=CFG["tp"],
+                         trail_atr_mult=CFG["tr"], max_hold=CFG["mh"], min_dir_prob=CFG["mdp"])
+        if r: results.append(("SOL 4H", r))
+
+    # === BTC 1D ===
+    print(f"\n[5] BTC 1D...")
     data_1d = fetch_ohlcv("BTC_USDT", "1D")
-
     if data_1d and len(data_1d) >= 100:
-        print(f"\n1D実データ: {len(data_1d)} bars")
-        configs_1d = [
-            # 日足: SL広め + TP低めで現実的に、トレール重視
-            ("1D-A 堅実",   35, 58, 2.5, 2.0, 1.5, 10),
-            ("1D-B 標準",   30, 55, 3.0, 2.5, 2.0, 15),
-            ("1D-C トレール", 25, 52, 3.0, 99.0, 1.5, 20),  # TP実質なし→トレールで利確
-            ("1D-D 広幅",   25, 50, 3.5, 3.0, 2.0, 20),
-        ]
-        for label, ms, mdp, sl, tp, tr, mh in configs_1d:
-            print(f"\n{'='*60}")
-            print(f"[{label}] score≥{ms} prob≥{mdp} SL{sl} TP{tp}")
-            r = run_backtest(data_1d, min_score=ms, is_daily=True,
-                             sl_atr_mult=sl, tp_atr_mult=tp, trail_atr_mult=tr,
-                             max_hold=mh, min_dir_prob=mdp)
-            if r:
-                results.append((label, r))
+        print(f"  → {len(data_1d)} bars")
+        r = run_backtest(data_1d, min_score=CFG["ms"], is_daily=True,
+                         sl_atr_mult=3.0, tp_atr_mult=99.0,
+                         trail_atr_mult=1.5, max_hold=20, min_dir_prob=52)
+        if r: results.append(("BTC 1D", r))
 
     # === 総合サマリー ===
     if results:
+        total_trades = sum(r["trades"] for _, r in results)
+        total_wins = sum(r["trades"] * r["win_rate"] / 100 for _, r in results)
+
         print(f"\n\n{'#'*60}")
-        print("  総合サマリー")
+        print(f"  総合サマリー（4H-C設定 全市場）")
         print("#" * 60)
-        print(f"  {'設定':<16} {'G':>2} {'N':>4} {'勝率':>6} {'PF':>6} {'Sharpe':>7} {'DD':>6} {'RR':>5} {'リターン':>8}")
-        print(f"  {'-'*62}")
+        print(f"  {'市場':<12} {'G':>2} {'N':>4} {'勝率':>6} {'PF':>6} {'Sharpe':>7} {'DD':>6} {'RR':>5} {'リターン':>8}")
+        print(f"  {'-'*60}")
         for label, r in results:
-            print(f"  {label:<16} {r['grade']:>2} {r['trades']:>4} "
+            print(f"  {label:<12} {r['grade']:>2} {r['trades']:>4} "
                   f"{r['win_rate']:>5.1f}% {r['pf']:>5.2f} {r['sharpe']:>7.2f} "
                   f"{r['max_dd']*100:>5.1f}% {r['rr']:>4.2f} {r['return']*100:>+7.2f}%")
+        print(f"  {'-'*60}")
+        agg_wr = total_wins / total_trades * 100 if total_trades > 0 else 0
+        print(f"  {'合計':<12}    {total_trades:>4} {agg_wr:>5.1f}%")
+        print(f"\n  結論: {'データ量で優位性確認' if total_trades >= 50 and agg_wr >= 50 else '要追加検証'}")
