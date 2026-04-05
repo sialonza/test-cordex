@@ -398,28 +398,78 @@ def strat_rsi_extreme(i, closes, highs, lows, rsi, atr, bbL, bbU, vol, volSMA):
 
 def strat_trend_pullback(i, closes, highs, lows, ema21, ema50, rsi, atr):
     """
-    戦略4: トレンド中の押し目/戻り
-    - 上昇トレンド(EMA21>EMA50) + EMA21へのプルバック + RSI40-50 → LONG
-    - 下降トレンド(EMA21<EMA50) + EMA21への戻り + RSI50-60 → SHORT
+    戦略4: トレンド中の押し目/戻り（改良版）
+
+    エントリー条件（LONG）:
+    1. 強いトレンド: EMA21>EMA50 + EMA21が5本連続上昇
+    2. プルバック: 安値がEMA21タッチ or EMA21-50の間
+    3. RSI: 35-55（売られ過ぎではないが中立寄り）
+    4. 反発確認: 陽線 + 前の足より高値更新
+    5. プルバック深さ: 直近高値から1-3ATR下落
     """
     if i < 55:
         return None
-    
-    # 上昇トレンド確認
-    uptrend = ema21[i] > ema50[i] and ema21[i] > ema21[i-5]
-    dntrend = ema21[i] < ema50[i] and ema21[i] < ema21[i-5]
-    
+
+    a = atr[i] if atr[i] > 0 else closes[i] * 0.01
+
+    # === トレンド強度判定 ===
+    # EMA21 > EMA50 かつ EMA21が3本連続上昇（緩和: 5→3）
+    uptrend = (ema21[i] > ema50[i] and
+               all(ema21[i-j] > ema21[i-j-1] for j in range(3)))
+    dntrend = (ema21[i] < ema50[i] and
+               all(ema21[i-j] < ema21[i-j-1] for j in range(3)))
+
+    # トレンドの勢い（EMA21の傾き角度）
+    ema_slope = abs(ema21[i] - ema21[i-5]) / a if a > 0 else 0
+    if ema_slope < 0.15:  # 傾きが弱すぎる → レンジ（緩和: 0.3→0.15）
+        return None
+
     if uptrend:
-        # EMA21付近への押し目
-        near_ema21 = abs(lows[i] - ema21[i]) / atr[i] < 1.0 if atr[i] > 0 else False
-        if near_ema21 and 35 < rsi[i] < 55 and closes[i] > opens_g[i]:
-            return ("LONG", 65 + min(15, (55 - rsi[i])))
-    
+        # プルバック検出: EMA21付近まで下落
+        pullback_to_ema = lows[i] <= ema21[i] + a * 0.8  # EMA21+0.8ATR以下（緩和）
+        not_too_deep = lows[i] >= ema50[i] - a * 1.0     # EMA50-1ATRまで許容（緩和）
+
+        # 直近高値からの下落幅チェック
+        recent_high = max(highs[max(0,i-10):i])
+        drop = recent_high - lows[i]
+        good_depth = a * 0.5 < drop < a * 5.0  # 0.5-5ATRの押し（緩和）
+
+        if pullback_to_ema and not_too_deep and good_depth:
+            # 反発確認: 陽線 + 安値が前足より切り上げ
+            bullish_bar = closes[i] > opens_g[i]
+            higher_low = lows[i] > lows[i-1] if i > 0 else False
+            rsi_ok = 25 < rsi[i] < 60  # RSI範囲拡大（緩和）
+
+            if bullish_bar and higher_low and rsi_ok:
+                # ボーナス: 下ヒゲが長い（買い圧力）
+                body = abs(closes[i] - opens_g[i])
+                lower_wick = min(closes[i], opens_g[i]) - lows[i]
+                wick_bonus = 5 if lower_wick > body * 1.5 else 0
+
+                conf = 60 + min(15, ema_slope * 5) + wick_bonus
+                return ("LONG", min(90, conf))
+
     if dntrend:
-        near_ema21 = abs(highs[i] - ema21[i]) / atr[i] < 1.0 if atr[i] > 0 else False
-        if near_ema21 and 45 < rsi[i] < 65 and closes[i] < opens_g[i]:
-            return ("SHORT", 65 + min(15, (rsi[i] - 45)))
-    
+        pullback_to_ema = highs[i] >= ema21[i] - a * 0.8
+        not_too_deep = highs[i] <= ema50[i] + a * 1.0
+
+        recent_low = min(lows[max(0,i-10):i])
+        rise = highs[i] - recent_low
+        good_depth = a * 0.5 < rise < a * 5.0
+
+        if pullback_to_ema and not_too_deep and good_depth:
+            bearish_bar = closes[i] < opens_g[i]
+            lower_high = highs[i] < highs[i-1] if i > 0 else False
+            rsi_ok = 40 < rsi[i] < 75  # RSI範囲拡大（緩和）
+
+            if bearish_bar and lower_high and rsi_ok:
+                body = abs(closes[i] - opens_g[i])
+                upper_wick = highs[i] - max(closes[i], opens_g[i])
+                wick_bonus = 5 if upper_wick > body * 1.5 else 0
+
+                conf = 60 + min(15, ema_slope * 5) + wick_bonus
+                return ("SHORT", min(90, conf))
+
     return None
 
 
@@ -650,14 +700,18 @@ if __name__ == "__main__":
         return strat_macd_divergence(i, C, H, L, e9, e21, rsi)
 
     strategies = [
-        # (name, func, sl_atr, tp_atr, trail, max_hold)
+        # 押し目/戻り改良版のパラメータ探索
+        ("PB-A タイト",     sig_pullback,   1.2, 1.5, 1.0, 8),
+        ("PB-B 標準",       sig_pullback,   1.5, 2.0, 1.2, 10),
+        ("PB-C 広SL",       sig_pullback,   2.0, 2.0, 1.5, 10),
+        ("PB-D 広TP",       sig_pullback,   1.5, 2.5, 1.5, 12),
+        ("PB-E RR重視",     sig_pullback,   1.0, 2.5, 1.2, 10),
+        ("PB-F 長保有",     sig_pullback,   2.0, 3.0, 1.8, 20),
+        ("PB-G 即利確",     sig_pullback,   1.5, 1.0, 0.8, 5),
+        # 他の戦略も残す（比較用）
         ("RSIダイバ",       sig_rsi_div,    1.5, 2.0, 1.2, 12),
-        ("RSIダイバ広",     sig_rsi_div,    2.0, 2.5, 1.5, 15),
         ("EMAクロス",       sig_ema_cross,  1.5, 2.0, 1.2, 12),
-        ("EMAクロス広",     sig_ema_cross,  2.0, 3.0, 1.8, 20),
         ("RSI極端値",       sig_rsi_extreme,1.5, 2.0, 1.2, 8),
-        ("RSI極端値広",     sig_rsi_extreme,2.0, 1.5, 1.0, 6),
-        ("押し目/戻り",     sig_pullback,   1.5, 2.0, 1.2, 10),
         ("MACDダイバ",      sig_macd_div,   1.5, 2.0, 1.2, 12),
     ]
 
