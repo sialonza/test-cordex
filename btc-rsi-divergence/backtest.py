@@ -271,239 +271,203 @@ def calc_kc(closes, highs, lows, period=20, mult=1.5):
     return upper, mid, lower
 
 
-# ============================================================
-#  スコア計算（14因子）
-# ============================================================
-def calc_squeeze_score(i, closes, highs, lows, opens, vols,
-                       bbU, bbB, bbL, kcU, kcM, kcL,
-                       atr, rsi, ema9, ema21, volSMA):
-    sqzLen = 20
-    score = 0.0
-
-    # (1) BB Squeeze
-    bbWidth = (bbU[i] - bbL[i]) / bbB[i] * 100 if bbB[i] > 0 else 0
-    s, e = max(0, i - sqzLen * 2 + 1), i + 1
-    bbWidths = [(bbU[j] - bbL[j]) / bbB[j] * 100 if bbB[j] > 0 else 0 for j in range(s, e)]
-    bbWidthMin = min(bbWidths) if bbWidths else 0
-    bbWidthMax = max(bbWidths) if bbWidths else 0
-    bbComp = 1.0 - (bbWidth - bbWidthMin) / (bbWidthMax - bbWidthMin) if bbWidthMax > bbWidthMin else 0
-    bbSma = sum(bbWidths[-sqzLen:]) / min(sqzLen, len(bbWidths)) if bbWidths else 0
-    bbSqueeze = bbWidth < bbSma * 0.75
-    score += 7.0 if bbSqueeze else 0
-    score += bbComp * 5.0
-
-    # (2) KC Squeeze
-    kcSqueeze = bbU[i] < kcU[i] and bbL[i] > kcL[i]
-    score += 15.0 if kcSqueeze else 0
-
-    # (3) ATR圧縮
-    atrW = atr[max(0, i - sqzLen + 1):i + 1]
-    atrComp = 1.0 - (atr[i] - min(atrW)) / (max(atrW) - min(atrW)) if max(atrW) > min(atrW) else 0
-    score += atrComp * 10.0
-
-    # (4) 出来高枯渇
-    vr = vols[i] / volSMA[i] if volSMA[i] > 0 else 1
-    score += 4.0 if vr < 0.6 else 0
-    decay = sum(1 for j in range(5) if i - j >= 0 and vols[i - j] < volSMA[i - j])
-    score += min(4.0, decay * 0.8)
-
-    # (5) Narrow Range
-    ranges = [highs[j] - lows[j] for j in range(max(0, i - sqzLen + 1), i + 1)]
-    rangeSMA = sum(ranges) / len(ranges) if ranges else 1
-    nrCount = sum(1 for j in range(4) if i - j >= 0 and rangeSMA > 0 and (highs[i - j] - lows[i - j]) < rangeSMA * 0.6)
-    score += min(8.0, nrCount * 2.0)
-
-    # (6) Inside Bar
-    ibCount = sum(1 for j in range(5) if i - j >= 1 and highs[i - j] < highs[i - j - 1] and lows[i - j] > lows[i - j - 1])
-    score += min(6.0, ibCount * 1.5)
-
-    # (7) RSI圧縮
-    rsiW = rsi[max(0, i - sqzLen + 1):i + 1]
-    rsiRange = max(rsiW) - min(rsiW) if rsiW else 30
-    score += 6.0 if rsiRange < 15 else 0
-
-    # (8) EMA収束
-    emaDiff = abs(ema9[i] - ema21[i]) / closes[i] * 100 if closes[i] > 0 else 0
-    score += 4.0 if emaDiff < 0.3 else 0
-
-    # (9) ローソク足パターン
-    bodySize = abs(closes[i] - opens[i])
-    candleRange = highs[i] - lows[i]
-    if candleRange > 0:
-        isDoji = bodySize / candleRange < 0.1
-        if i > 0:
-            bullEngulf = closes[i] > opens[i] and closes[i - 1] < opens[i - 1] and closes[i] > opens[i - 1] and opens[i] < closes[i - 1]
-            bearEngulf = closes[i] < opens[i] and closes[i - 1] > opens[i - 1] and closes[i] < opens[i - 1] and opens[i] > closes[i - 1]
-        else:
-            bullEngulf = bearEngulf = False
-        if isDoji or bullEngulf or bearEngulf:
-            score += 5.0
-
-    finalScore = min(100.0, round(score / 1.18))
-    return finalScore, kcSqueeze, bbSqueeze, atrComp
-
 
 # ============================================================
-#  方向予測（22因子・簡略版）
+#  戦略シグナル生成
 # ============================================================
-def calc_direction(i, closes, highs, lows, opens, vols,
-                   rsi, ema9, ema21, atr, bbU, bbL, volSMA,
-                   is_daily=False):
-    bullW = 0.0
-    bearW = 0.0
 
-    # D1 RSI — 日足はレンジが狭いので閾値を緩和
-    if is_daily:
-        if rsi[i] < 35: bullW += 5
-        elif rsi[i] < 45: bullW += 2.5
-        if rsi[i] > 65: bearW += 5
-        elif rsi[i] > 55: bearW += 2.5
-    else:
-        if rsi[i] < 25: bullW += 5
-        elif rsi[i] < 30: bullW += 3.5
-        elif rsi[i] < 40: bullW += 1.5
-        if rsi[i] > 75: bearW += 5
-        elif rsi[i] > 70: bearW += 3.5
-        elif rsi[i] > 60: bearW += 1.5
+def find_swing_highs(highs, order=5):
+    """スイングハイを検出"""
+    swings = []
+    for i in range(order, len(highs) - order):
+        if all(highs[i] >= highs[i-j] for j in range(1, order+1)) and \
+           all(highs[i] >= highs[i+j] for j in range(1, order+1)):
+            swings.append((i, highs[i]))
+    return swings
 
-    # D2 RSI momentum — 日足は5日間で見る
-    lookback = 5 if is_daily else 3
-    if i >= lookback:
-        rm = rsi[i] - rsi[i - lookback]
-        if rm > 8: bullW += 3
-        elif rm > 4: bullW += 1.5
-        if rm < -8: bearW += 3
-        elif rm < -4: bearW += 1.5
-
-    # D3 EMA alignment
-    if ema9[i] > ema21[i]: bullW += 3
-    else: bearW += 3
-
-    # D3b EMA slope (日足用追加: EMAの傾き方向)
-    if is_daily and i >= 5:
-        ema21_slope = ema21[i] - ema21[i - 5]
-        if ema21_slope > 0: bullW += 3
-        else: bearW += 3
-
-    # D5 MACD (simplified as ema9-ema21)
-    macd = ema9[i] - ema21[i]
-    if macd > 0: bullW += 1.5
-    else: bearW += 1.5
-    if i > 0:
-        macd_prev = ema9[i - 1] - ema21[i - 1]
-        if macd > 0 and macd > macd_prev: bullW += 2.5
-        if macd < 0 and macd < macd_prev: bearW += 2.5
-
-    # D7 OBV trend — 日足は40日で見る
-    obv_period = 40 if is_daily else 20
-    if i >= 5:
-        obv = 0
-        for j in range(max(0, i - obv_period), i + 1):
-            if j > 0:
-                if closes[j] > closes[j - 1]: obv += vols[j]
-                elif closes[j] < closes[j - 1]: obv -= vols[j]
-        if obv > 0: bullW += 2
-        else: bearW += 2
-
-    # D8 Smart money — 日足は5日前と比較
-    sm_lb = 5 if is_daily else 3
-    if i >= sm_lb:
-        priceUp = closes[i] > closes[i - sm_lb]
-        volUp = vols[i] > volSMA[i] if volSMA[i] > 0 else False
-        if priceUp and volUp: bullW += 3
-        elif priceUp and not volUp: bearW += 1
-        if not priceUp and volUp: bearW += 3
-        elif not priceUp and not volUp: bullW += 1
-
-    # D10 Squeeze momentum — 日足は40日
-    sqz_period = 40 if is_daily else 20
-    if i >= sqz_period:
-        sqzMid = (max(highs[i - sqz_period + 1:i + 1]) + min(lows[i - sqz_period + 1:i + 1])) / 2
-        sqzMom = closes[i] - sqzMid
-        if sqzMom > 0: bullW += 3
-        else: bearW += 3
-
-    # D11 Market structure — 日足は20/40日スイング
-    if is_daily and i >= 40:
-        swH1 = max(highs[max(0, i - 19):i + 1])
-        swL1 = min(lows[max(0, i - 19):i + 1])
-        swH2 = max(highs[max(0, i - 39):max(0, i - 19)])
-        swL2 = min(lows[max(0, i - 39):max(0, i - 19)])
-        if swH1 > swH2 and swL1 > swL2: bullW += 5
-        elif swL1 > swL2: bullW += 2.5
-        if swH1 < swH2 and swL1 < swL2: bearW += 5
-        elif swH1 < swH2: bearW += 2.5
-    elif not is_daily and i >= 20:
-        swH1 = max(highs[max(0, i - 9):i + 1])
-        swL1 = min(lows[max(0, i - 9):i + 1])
-        swH2 = max(highs[max(0, i - 19):max(0, i - 9)])
-        swL2 = min(lows[max(0, i - 19):max(0, i - 9)])
-        if swH1 > swH2 and swL1 > swL2: bullW += 4
-        elif swL1 > swL2: bullW += 2
-        if swH1 < swH2 and swL1 < swL2: bearW += 4
-        elif swH1 < swH2: bearW += 2
-
-    # D12 ROC — 日足は20日ROC
-    roc_period = 20 if is_daily else 10
-    roc_thresh = 5 if is_daily else 3
-    if i >= roc_period:
-        roc = (closes[i] - closes[i - roc_period]) / closes[i - roc_period] * 100
-        if roc > roc_thresh: bullW += 2
-        elif roc > 0: bullW += 0.5
-        if roc < -roc_thresh: bearW += 2
-        elif roc < 0: bearW += 0.5
-
-    # D13 EMA200 position (日足用追加: 長期トレンド)
-    if is_daily and i >= 200:
-        ema200_approx = sum(closes[i - 199:i + 1]) / 200
-        if closes[i] > ema200_approx: bullW += 4
-        else: bearW += 4
-
-    # D16 Engulfing
-    if i > 0:
-        if closes[i] > opens[i] and closes[i - 1] < opens[i - 1] and closes[i] > opens[i - 1] and opens[i] < closes[i - 1]:
-            bullW += 3
-        if closes[i] < opens[i] and closes[i - 1] > opens[i - 1] and closes[i] < opens[i - 1] and opens[i] > closes[i - 1]:
-            bearW += 3
-
-    # D18 BB position
-    bbRange = bbU[i] - bbL[i]
-    if bbRange > 0:
-        bbPos = (closes[i] - bbL[i]) / bbRange
-        if bbPos < 0.1: bullW += 2
-        elif bbPos < 0.3: bullW += 1
-        if bbPos > 0.9: bearW += 2
-        elif bbPos > 0.7: bearW += 1
-
-    # D19 Consecutive candles (日足用追加: 連続陽線/陰線)
-    if is_daily and i >= 3:
-        bullCandles = sum(1 for j in range(3) if closes[i - j] > opens[i - j])
-        bearCandles = sum(1 for j in range(3) if closes[i - j] < opens[i - j])
-        if bullCandles == 3: bullW += 2
-        if bearCandles == 3: bearW += 2
-
-    totalDir = bullW + bearW
-    dirProb = round(max(bullW, bearW) / totalDir * 100) if totalDir > 0 else 50
-    isBull = bullW > bearW
-    return isBull, dirProb, bullW, bearW
+def find_swing_lows(lows, order=5):
+    """スイングローを検出"""
+    swings = []
+    for i in range(order, len(lows) - order):
+        if all(lows[i] <= lows[i-j] for j in range(1, order+1)) and \
+           all(lows[i] <= lows[i+j] for j in range(1, order+1)):
+            swings.append((i, lows[i]))
+    return swings
 
 
-# ============================================================
-#  バックテスト実行（実戦仕様: SL/TP/トレーリング/確信度フィルタ）
-# ============================================================
-def run_backtest(data, min_score=45, is_daily=False,
-                 sl_atr_mult=1.5, tp_atr_mult=3.0, trail_atr_mult=2.0,
-                 max_hold=20, min_dir_prob=60, slippage=0.001, commission=0.001):
+def strat_rsi_divergence(i, closes, highs, lows, rsi, atr, ema50):
     """
-    実戦仕様バックテスト:
-    - ATRベースのSL/TP
-    - トレーリングストップ
-    - 方向確信度フィルタ (dirProb >= min_dir_prob のみエントリー)
-    - 最大保有期間制限
+    戦略1: RSIダイバージェンス
+    - Bullish: 価格が安値更新 + RSIが安値切り上げ → LONG
+    - Bearish: 価格が高値更新 + RSIが高値切り下げ → SHORT
+    - フィルタ: RSI極端域(30以下/70以上)でのみ有効
     """
+    if i < 30:
+        return None
+    lookback = 20
+
+    # Bullish divergence
+    # 直近の安値2つを比較
+    recent_lows = []
+    for j in range(i - lookback, i - 2):
+        if j < 2:
+            continue
+        if lows[j] < lows[j-1] and lows[j] < lows[j-2] and lows[j] < lows[j+1] and lows[j] < lows[j+2]:
+            recent_lows.append((j, lows[j], rsi[j]))
+    
+    if len(recent_lows) >= 1:
+        prev = recent_lows[-1]
+        # 現在足が安値圏で、前の安値より価格が低いがRSIは高い
+        cur_low_zone = min(lows[i-2:i+1])
+        cur_rsi = min(rsi[i-2:i+1])
+        if (cur_low_zone < prev[1] and  # 価格は安値更新
+            cur_rsi > prev[2] and        # RSIは切り上げ
+            rsi[i] < 35 and              # RSI極端域
+            closes[i] > closes[i-1]):    # 反発の兆し
+            return ("LONG", 70 + min(20, (35 - rsi[i]) * 2))
+
+    # Bearish divergence
+    recent_highs = []
+    for j in range(i - lookback, i - 2):
+        if j < 2:
+            continue
+        if highs[j] > highs[j-1] and highs[j] > highs[j-2] and highs[j] > highs[j+1] and highs[j] > highs[j+2]:
+            recent_highs.append((j, highs[j], rsi[j]))
+    
+    if len(recent_highs) >= 1:
+        prev = recent_highs[-1]
+        cur_high_zone = max(highs[i-2:i+1])
+        cur_rsi = max(rsi[i-2:i+1])
+        if (cur_high_zone > prev[1] and
+            cur_rsi < prev[2] and
+            rsi[i] > 65 and
+            closes[i] < closes[i-1]):
+            return ("SHORT", 70 + min(20, (rsi[i] - 65) * 2))
+
+    return None
+
+
+def strat_ema_cross(i, closes, ema9, ema21, ema50, atr, rsi):
+    """
+    戦略2: EMAクロス + トレンドフィルタ
+    - EMA9がEMA21をゴールデンクロス + 価格>EMA50 → LONG
+    - EMA9がEMA21をデッドクロス + 価格<EMA50 → SHORT
+    - RSI40-60の中立域では見送り
+    """
+    if i < 2 or i < 50:
+        return None
+    
+    # ゴールデンクロス
+    if ema9[i-1] <= ema21[i-1] and ema9[i] > ema21[i]:
+        if closes[i] > ema50[i] and rsi[i] > 50:
+            conf = 60 + min(20, (rsi[i] - 50))
+            return ("LONG", conf)
+    
+    # デッドクロス
+    if ema9[i-1] >= ema21[i-1] and ema9[i] < ema21[i]:
+        if closes[i] < ema50[i] and rsi[i] < 50:
+            conf = 60 + min(20, (50 - rsi[i]))
+            return ("SHORT", conf)
+    
+    return None
+
+
+def strat_rsi_extreme(i, closes, highs, lows, rsi, atr, bbL, bbU, vol, volSMA):
+    """
+    戦略3: RSI極端値 + ボリューム確認
+    - RSI<25 + ボリュームスパイク + BB下バンド下 → LONG
+    - RSI>75 + ボリュームスパイク + BB上バンド上 → SHORT
+    """
+    if i < 20:
+        return None
+    
+    vol_spike = vol[i] > volSMA[i] * 1.5 if volSMA[i] > 0 else False
+    
+    if rsi[i] < 25 and closes[i] < bbL[i] and vol_spike:
+        if closes[i] > closes[i-1]:  # 反発の兆し
+            conf = 75 + min(15, (25 - rsi[i]) * 3)
+            return ("LONG", conf)
+    
+    if rsi[i] > 75 and closes[i] > bbU[i] and vol_spike:
+        if closes[i] < closes[i-1]:  # 反落の兆し
+            conf = 75 + min(15, (rsi[i] - 75) * 3)
+            return ("SHORT", conf)
+    
+    return None
+
+
+def strat_trend_pullback(i, closes, highs, lows, ema21, ema50, rsi, atr):
+    """
+    戦略4: トレンド中の押し目/戻り
+    - 上昇トレンド(EMA21>EMA50) + EMA21へのプルバック + RSI40-50 → LONG
+    - 下降トレンド(EMA21<EMA50) + EMA21への戻り + RSI50-60 → SHORT
+    """
+    if i < 55:
+        return None
+    
+    # 上昇トレンド確認
+    uptrend = ema21[i] > ema50[i] and ema21[i] > ema21[i-5]
+    dntrend = ema21[i] < ema50[i] and ema21[i] < ema21[i-5]
+    
+    if uptrend:
+        # EMA21付近への押し目
+        near_ema21 = abs(lows[i] - ema21[i]) / atr[i] < 1.0 if atr[i] > 0 else False
+        if near_ema21 and 35 < rsi[i] < 55 and closes[i] > opens_g[i]:
+            return ("LONG", 65 + min(15, (55 - rsi[i])))
+    
+    if dntrend:
+        near_ema21 = abs(highs[i] - ema21[i]) / atr[i] < 1.0 if atr[i] > 0 else False
+        if near_ema21 and 45 < rsi[i] < 65 and closes[i] < opens_g[i]:
+            return ("SHORT", 65 + min(15, (rsi[i] - 45)))
+    
+    return None
+
+
+def strat_macd_divergence(i, closes, highs, lows, ema9, ema21, rsi):
+    """
+    戦略5: MACDダイバージェンス
+    - MACD = EMA9-EMA21 のダイバージェンス
+    """
+    if i < 25:
+        return None
+    
+    macd = [ema9[j] - ema21[j] for j in range(len(ema9))]
+    lookback = 15
+    
+    # Bullish: 価格安値更新 + MACD切り上げ
+    prev_low_i = None
+    for j in range(i - lookback, i - 3):
+        if j < 1:
+            continue
+        if lows[j] < lows[j-1] and lows[j] < lows[j+1]:
+            prev_low_i = j
+    
+    if prev_low_i and lows[i] < lows[prev_low_i] and macd[i] > macd[prev_low_i]:
+        if rsi[i] < 40:
+            return ("LONG", 65)
+    
+    # Bearish: 価格高値更新 + MACD切り下げ
+    prev_high_i = None
+    for j in range(i - lookback, i - 3):
+        if j < 1:
+            continue
+        if highs[j] > highs[j-1] and highs[j] > highs[j+1]:
+            prev_high_i = j
+    
+    if prev_high_i and highs[i] > highs[prev_high_i] and macd[i] < macd[prev_high_i]:
+        if rsi[i] > 60:
+            return ("SHORT", 65)
+    
+    return None
+
+
+# ============================================================
+#  統一バックテストエンジン
+# ============================================================
+def run_strategy(name, data, signal_func, sl_atr=1.5, tp_atr=2.0, trail_atr=1.2,
+                 max_hold=12, slippage=0.001, commission=0.001):
     n = len(data)
-    if n < 50:
-        print("[ERROR] Not enough data (need 50+ bars)")
+    if n < 60:
         return None
 
     closes = [d["c"] for d in data]
@@ -512,386 +476,152 @@ def run_backtest(data, min_score=45, is_daily=False,
     opens = [d["o"] for d in data]
     vols = [d["v"] for d in data]
 
-    # Indicators
+    # Make opens available globally for strat_trend_pullback
+    global opens_g
+    opens_g = opens
+
     rsi = calc_rsi(closes)
     atr = calc_atr(highs, lows, closes)
     ema9 = calc_ema(closes, 9)
     ema21 = calc_ema(closes, 21)
+    ema50 = calc_ema(closes, 50)
     bbU, bbB, bbL = calc_bb(closes)
-    kcU, kcM, kcL = calc_kc(closes, highs, lows)
     volSMA = calc_ema(vols, 20)
 
-    # Walk-forward: train 50%, test 50%
     split = int(n * 0.5)
-    test_start = max(split, 50)
+    test_start = max(split, 55)
 
-    # Trade tracking
     trades = []
-    last_sig_bar = -10
     in_trade = False
     trade = {}
-    run_backtest._alerts = []  # reset
+    last_sig = -10
 
     for i in range(test_start, n):
-        # --- 既存ポジション管理 ---
+        # Position management
         if in_trade:
             bars_held = i - trade["entry_bar"]
-
             if trade["dir"] == "LONG":
-                # トレーリングストップ更新
-                new_trail = highs[i] - atr[trade["entry_bar"]] * trail_atr_mult
-                trade["trail_stop"] = max(trade["trail_stop"], new_trail)
-                effective_sl = max(trade["sl"], trade["trail_stop"])
+                trade["trail_stop"] = max(trade["trail_stop"],
+                                          highs[i] - atr[trade["entry_bar"]] * trail_atr)
+                eff_sl = max(trade["sl"], trade["trail_stop"])
+                if lows[i] <= eff_sl:
+                    pnl = (eff_sl * (1-slippage) - trade["ep"]) / trade["ep"] - commission*2
+                    trades.append({"pnl": pnl, "reason": "SL", "bars": bars_held, "dir": "LONG"})
+                    in_trade = False; continue
+                if highs[i] >= trade["tp"]:
+                    pnl = (trade["tp"] * (1-slippage) - trade["ep"]) / trade["ep"] - commission*2
+                    trades.append({"pnl": pnl, "reason": "TP", "bars": bars_held, "dir": "LONG"})
+                    in_trade = False; continue
+                if bars_held >= max_hold:
+                    pnl = (closes[i] * (1-slippage) - trade["ep"]) / trade["ep"] - commission*2
+                    trades.append({"pnl": pnl, "reason": "TIME", "bars": bars_held, "dir": "LONG"})
+                    in_trade = False; continue
+            else:
+                trade["trail_stop"] = min(trade["trail_stop"],
+                                          lows[i] + atr[trade["entry_bar"]] * trail_atr)
+                eff_sl = min(trade["sl"], trade["trail_stop"])
+                if highs[i] >= eff_sl:
+                    pnl = (trade["ep"] - eff_sl * (1+slippage)) / trade["ep"] - commission*2
+                    trades.append({"pnl": pnl, "reason": "SL", "bars": bars_held, "dir": "SHORT"})
+                    in_trade = False; continue
+                if lows[i] <= trade["tp"]:
+                    pnl = (trade["ep"] - trade["tp"] * (1+slippage)) / trade["ep"] - commission*2
+                    trades.append({"pnl": pnl, "reason": "TP", "bars": bars_held, "dir": "SHORT"})
+                    in_trade = False; continue
+                if bars_held >= max_hold:
+                    pnl = (trade["ep"] - closes[i] * (1+slippage)) / trade["ep"] - commission*2
+                    trades.append({"pnl": pnl, "reason": "TIME", "bars": bars_held, "dir": "SHORT"})
+                    in_trade = False; continue
 
-                # SLヒット
-                if lows[i] <= effective_sl:
-                    exit_price = effective_sl * (1 - slippage)
-                    pnl = (exit_price - trade["entry_price"]) / trade["entry_price"] - commission * 2
-                    trades.append({**trade, "exit_price": exit_price, "pnl": pnl,
-                                   "bars": bars_held, "exit_reason": "SL"})
-                    in_trade = False
-                    continue
-                # TPヒット
-                elif highs[i] >= trade["tp"]:
-                    exit_price = trade["tp"] * (1 - slippage)
-                    pnl = (exit_price - trade["entry_price"]) / trade["entry_price"] - commission * 2
-                    trades.append({**trade, "exit_price": exit_price, "pnl": pnl,
-                                   "bars": bars_held, "exit_reason": "TP"})
-                    in_trade = False
-                    continue
-                # 最大保有期間
-                elif bars_held >= max_hold:
-                    exit_price = closes[i] * (1 - slippage)
-                    pnl = (exit_price - trade["entry_price"]) / trade["entry_price"] - commission * 2
-                    trades.append({**trade, "exit_price": exit_price, "pnl": pnl,
-                                   "bars": bars_held, "exit_reason": "TIME"})
-                    in_trade = False
-                    continue
-
-            else:  # SHORT
-                new_trail = lows[i] + atr[trade["entry_bar"]] * trail_atr_mult
-                trade["trail_stop"] = min(trade["trail_stop"], new_trail)
-                effective_sl = min(trade["sl"], trade["trail_stop"])
-
-                if highs[i] >= effective_sl:
-                    exit_price = effective_sl * (1 + slippage)
-                    pnl = (trade["entry_price"] - exit_price) / trade["entry_price"] - commission * 2
-                    trades.append({**trade, "exit_price": exit_price, "pnl": pnl,
-                                   "bars": bars_held, "exit_reason": "SL"})
-                    in_trade = False
-                    continue
-                elif lows[i] <= trade["tp"]:
-                    exit_price = trade["tp"] * (1 + slippage)
-                    pnl = (trade["entry_price"] - exit_price) / trade["entry_price"] - commission * 2
-                    trades.append({**trade, "exit_price": exit_price, "pnl": pnl,
-                                   "bars": bars_held, "exit_reason": "TP"})
-                    in_trade = False
-                    continue
-                elif bars_held >= max_hold:
-                    exit_price = closes[i] * (1 + slippage)
-                    pnl = (trade["entry_price"] - exit_price) / trade["entry_price"] - commission * 2
-                    trades.append({**trade, "exit_price": exit_price, "pnl": pnl,
-                                   "bars": bars_held, "exit_reason": "TIME"})
-                    in_trade = False
-                    continue
-
-        # --- 新規シグナル検出（2段階方式）---
-        # Stage 1: スクイーズ検知 → アラート状態にする
-        # Stage 2: BBバンド突破で初めてエントリー
-        if in_trade:
-            continue
-        if i >= n - 2:
+        if in_trade or i >= n - 2 or (i - last_sig) < 5:
             continue
 
-        score, kcSqz, bbSqz, atrComp = calc_squeeze_score(
-            i, closes, highs, lows, opens, vols,
-            bbU, bbB, bbL, kcU, kcM, kcL, atr, rsi, ema9, ema21, volSMA)
-
-        # スクイーズ検知: アラート状態を記録
-        if score >= min_score:
-            # 直近でスクイーズが検知されたことを記録（alert_barリストに追加）
-            if not hasattr(run_backtest, '_alerts'):
-                run_backtest._alerts = []
-            run_backtest._alerts.append(i)
-
-        # BBブレイクアウト確認: 過去N本以内にスクイーズがあったか？
-        breakout_window = 8  # スクイーズ後8本以内のBB突破を待つ
-        recent_squeeze = False
-        recent_score = 0
-        for lookback_j in range(1, breakout_window + 1):
-            past_i = i - lookback_j
-            if past_i < test_start:
-                continue
-            past_score, _, _, _ = calc_squeeze_score(
-                past_i, closes, highs, lows, opens, vols,
-                bbU, bbB, bbL, kcU, kcM, kcL, atr, rsi, ema9, ema21, volSMA)
-            if past_score >= min_score:
-                recent_squeeze = True
-                recent_score = max(recent_score, past_score)
-                break
-
-        if not recent_squeeze:
+        # Signal
+        sig = signal_func(i, closes, highs, lows, rsi, atr, ema9, ema21, ema50,
+                          bbU, bbB, bbL, vols, volSMA, opens)
+        if not sig:
             continue
 
-        # BBブレイクアウト判定
-        bb_up = closes[i] > bbU[i]    # BB上突破
-        bb_dn = closes[i] < bbL[i]    # BB下突破
+        direction, confidence = sig
+        last_sig = i
+        a = atr[i] if atr[i] > 0 else closes[i] * 0.01
 
-        if not bb_up and not bb_dn:
-            continue
-
-        # クールダウン
-        if (i - last_sig_bar) < 5:
-            continue
-
-        # 逆張り: BB上突破→SHORT（過熱→反落）、BB下突破→LONG（売られ過ぎ→反発）
-        isBull = bb_dn  # 下突破ならLONG（逆張り）
-
-        # 方向予測は参考程度（逆張りなので一致不要）
-        dirBull, dirProb, bullW, bearW = calc_direction(
-            i, closes, highs, lows, opens, vols,
-            rsi, ema9, ema21, atr, bbU, bbL, volSMA, is_daily=is_daily)
-
-        # 逆張りでは確信度・トレンド・方向フィルタは不要
-        # （ブレイクアウトの逆を突くため）
-
-        last_sig_bar = i
-        entry_atr = atr[i] if atr[i] > 0 else closes[i] * 0.01
-
-        # 逆張りSL/TP設定
-        # TP = BB basis（中央線）への回帰を狙う
-        # SL = ブレイクアウト方向にATR倍率
-        if isBull:  # BB下突破 → LONG（反発狙い）
-            entry_price = closes[i] * (1 + slippage)
-            sl = entry_price - entry_atr * sl_atr_mult
-            tp = bbB[i]  # BB中央線まで戻ると利確
-            if tp <= entry_price:
-                tp = entry_price + entry_atr * tp_atr_mult  # fallback
-            trade = {
-                "dir": "LONG", "entry_bar": i, "entry_price": entry_price,
-                "sl": sl, "tp": tp, "trail_stop": sl,
-                "score": recent_score, "dirProb": dirProb
-            }
-        else:  # BB上突破 → SHORT（反落狙い）
-            entry_price = closes[i] * (1 - slippage)
-            sl = entry_price + entry_atr * sl_atr_mult
-            tp = bbB[i]  # BB中央線まで戻ると利確
-            if tp >= entry_price:
-                tp = entry_price - entry_atr * tp_atr_mult  # fallback
-            trade = {
-                "dir": "SHORT", "entry_bar": i, "entry_price": entry_price,
-                "sl": sl, "tp": tp, "trail_stop": sl,
-                "score": recent_score, "dirProb": dirProb
-            }
+        if direction == "LONG":
+            ep = closes[i] * (1 + slippage)
+            trade = {"dir": "LONG", "entry_bar": i, "ep": ep,
+                     "sl": ep - a * sl_atr, "tp": ep + a * tp_atr,
+                     "trail_stop": ep - a * sl_atr}
+        else:
+            ep = closes[i] * (1 - slippage)
+            trade = {"dir": "SHORT", "entry_bar": i, "ep": ep,
+                     "sl": ep + a * sl_atr, "tp": ep - a * tp_atr,
+                     "trail_stop": ep + a * sl_atr}
         in_trade = True
 
-    # ============================================================
-    #  結果出力
-    # ============================================================
-    print("=" * 60)
-    print("  Big Move Predictor 実戦バックテスト")
-    print("=" * 60)
-    print(f"  データ:     {n} bars ({'1D' if is_daily else '4H'})")
-    print(f"  テスト:     bar {test_start} ~ {n}")
-    print(f"  最小スコア: {min_score}%  最小確信度: {min_dir_prob}%")
-    print(f"  SL: {sl_atr_mult}×ATR  TP: {tp_atr_mult}×ATR  Trail: {trail_atr_mult}×ATR")
-    print(f"  最大保有:   {max_hold}本  Slip: {slippage*100:.1f}%  手数料: {commission*100:.1f}%")
-    print(f"  エントリー: スクイーズ→BB突破逆張り（平均回帰）")
-
+    # Results
     if not trades:
-        print(f"\n  シグナルなし")
         return None
-
-    # Exit reason breakdown
-    tp_count = sum(1 for t in trades if t["exit_reason"] == "TP")
-    sl_count = sum(1 for t in trades if t["exit_reason"] == "SL")
-    time_count = sum(1 for t in trades if t["exit_reason"] == "TIME")
 
     pnls = [t["pnl"] for t in trades]
     wins = [p for p in pnls if p > 0]
     losses = [p for p in pnls if p <= 0]
-    total_return = sum(pnls)
-    win_rate = len(wins) / len(pnls) * 100
-    avg_win = sum(wins) / len(wins) if wins else 0
-    avg_loss = sum(losses) / len(losses) if losses else 0
-    profit_factor = abs(sum(wins) / sum(losses)) if losses and sum(losses) != 0 else float('inf')
-    avg_rr = abs(avg_win / avg_loss) if avg_loss != 0 else float('inf')
+    wr = len(wins) / len(pnls) * 100
+    pf = abs(sum(wins) / sum(losses)) if losses and sum(losses) != 0 else 0
+    avg_w = sum(wins) / len(wins) if wins else 0
+    avg_l = sum(losses) / len(losses) if losses else 0
+    rr = abs(avg_w / avg_l) if avg_l != 0 else 0
+    ret = sum(pnls)
 
-    # Equity curve & drawdown
     equity = [1.0]
     for p in pnls:
         equity.append(equity[-1] * (1 + p))
     peak = equity[0]
-    max_dd = 0
+    mdd = 0
     for e in equity:
         peak = max(peak, e)
-        dd = (peak - e) / peak
-        max_dd = max(max_dd, dd)
+        mdd = max(mdd, (peak - e) / peak)
 
-    # Sharpe
     if len(pnls) > 1:
-        mean_r = sum(pnls) / len(pnls)
-        std_r = (sum((p - mean_r) ** 2 for p in pnls) / (len(pnls) - 1)) ** 0.5
-        sharpe = (mean_r / std_r) * (252 ** 0.5) if std_r > 0 else 0
+        mr = sum(pnls) / len(pnls)
+        sr = (sum((p - mr)**2 for p in pnls) / (len(pnls)-1)) ** 0.5
+        sharpe = (mr / sr) * (252**0.5) if sr > 0 else 0
     else:
         sharpe = 0
 
-    # Calmar ratio
-    calmar = (total_return / len(pnls) * 252) / max_dd if max_dd > 0 else 0
+    tp_n = sum(1 for t in trades if t["reason"] == "TP")
+    sl_n = sum(1 for t in trades if t["reason"] == "SL")
+    tm_n = sum(1 for t in trades if t["reason"] == "TIME")
 
-    # Consecutive losses
-    max_consec_loss = 0
-    cur_consec = 0
-    for p in pnls:
-        if p <= 0:
-            cur_consec += 1
-            max_consec_loss = max(max_consec_loss, cur_consec)
-        else:
-            cur_consec = 0
+    # Grade (strict)
+    pts = 100
+    if len(trades) < 10: pts -= 40
+    elif len(trades) < 20: pts -= 15
+    elif len(trades) < 30: pts -= 5
+    if pf < 1.0: pts -= 50
+    elif pf < 1.2: pts -= 20
+    elif pf < 1.5: pts -= 10
+    if wr < 35: pts -= 30
+    elif wr < 45: pts -= 15
+    if mdd > 0.25: pts -= 35
+    elif mdd > 0.15: pts -= 15
+    elif mdd > 0.10: pts -= 5
+    if sharpe < 0: pts -= 25
+    elif sharpe < 0.5: pts -= 15
+    elif sharpe < 1.0: pts -= 5
+    if rr < 0.8: pts -= 15
+    elif rr < 1.0: pts -= 8
+    if ret < 0: pts -= 20
 
-    # Avg hold time
-    avg_bars = sum(t["bars"] for t in trades) / len(trades)
-
-    print(f"\n--- トレード統計 ---")
-    print(f"  トレード数:     {len(trades)}")
-    print(f"  勝率:           {win_rate:.1f}%")
-    print(f"  平均利益:       +{avg_win * 100:.2f}%")
-    print(f"  平均損失:       {avg_loss * 100:.2f}%")
-    print(f"  平均RR比:       {avg_rr:.2f}")
-    print(f"  Profit Factor:  {profit_factor:.2f}")
-    print(f"  累積リターン:   {total_return * 100:.2f}%")
-    print(f"  最大DD:         {max_dd * 100:.2f}%")
-    print(f"  Sharpe Ratio:   {sharpe:.2f}")
-    print(f"  Calmar Ratio:   {calmar:.2f}")
-    print(f"  最大連敗:       {max_consec_loss}")
-    print(f"  平均保有:       {avg_bars:.1f} bars")
-    print(f"  最終エクイティ: {equity[-1]:.4f}")
-
-    print(f"\n--- 決済内訳 ---")
-    print(f"  TP利確:   {tp_count} ({tp_count/len(trades)*100:.0f}%)")
-    print(f"  SL損切:   {sl_count} ({sl_count/len(trades)*100:.0f}%)")
-    print(f"  時間切れ: {time_count} ({time_count/len(trades)*100:.0f}%)")
-
-    # Long/Short breakdown
-    longs = [t for t in trades if t["dir"] == "LONG"]
-    shorts = [t for t in trades if t["dir"] == "SHORT"]
-    l_wr = sum(1 for t in longs if t["pnl"] > 0) / len(longs) * 100 if longs else 0
-    s_wr = sum(1 for t in shorts if t["pnl"] > 0) / len(shorts) * 100 if shorts else 0
-    print(f"\n--- Long/Short ---")
-    print(f"  Long:  {len(longs)}回  勝率{l_wr:.0f}%  PnL {sum(t['pnl'] for t in longs)*100:.2f}%")
-    print(f"  Short: {len(shorts)}回  勝率{s_wr:.0f}%  PnL {sum(t['pnl'] for t in shorts)*100:.2f}%")
-
-    # === 厳格判定（減点方式） ===
-    print(f"\n{'=' * 60}")
-    print(f"  実戦判定（厳格基準）")
-    print(f"{'=' * 60}")
-
-    # スコア100点からの減点方式（厳格）
-    points = 100
-    reasons = []
-
-    # 基準1: トレード数 (最低10、理想30+)
-    if len(trades) < 10:
-        points -= 40
-        reasons.append(f"トレード数<10({len(trades)}) 統計的に無意味")
-    elif len(trades) < 20:
-        points -= 15
-        reasons.append(f"トレード数<20({len(trades)}) 信頼性低")
-    elif len(trades) < 30:
-        points -= 5
-        reasons.append(f"トレード数<30({len(trades)})")
-
-    # 基準2: PF (致命的: <1.0 = マイナス期待値)
-    if profit_factor < 1.0:
-        points -= 50
-        reasons.append(f"PF<1.0({profit_factor:.2f}) マイナス期待値")
-    elif profit_factor < 1.2:
-        points -= 20
-        reasons.append(f"PF<1.2({profit_factor:.2f}) 手数料負け")
-    elif profit_factor < 1.5:
-        points -= 10
-        reasons.append(f"PF<1.5({profit_factor:.2f})")
-
-    # 基準3: 勝率
-    if win_rate < 35:
-        points -= 30
-        reasons.append(f"勝率<35%({win_rate:.0f}%)")
-    elif win_rate < 45:
-        points -= 15
-        reasons.append(f"勝率<45%({win_rate:.0f}%)")
-
-    # 基準4: MaxDD (致命的: >25%)
-    if max_dd > 0.25:
-        points -= 35
-        reasons.append(f"最大DD>25%({max_dd*100:.0f}%) 口座壊滅リスク")
-    elif max_dd > 0.15:
-        points -= 15
-        reasons.append(f"最大DD>15%({max_dd*100:.0f}%)")
-    elif max_dd > 0.10:
-        points -= 5
-
-    # 基準5: Sharpe
-    if sharpe < 0:
-        points -= 25
-        reasons.append(f"Sharpe<0({sharpe:.2f}) リスク対比マイナス")
-    elif sharpe < 0.5:
-        points -= 15
-        reasons.append(f"Sharpe<0.5({sharpe:.2f})")
-    elif sharpe < 1.0:
-        points -= 5
-
-    # 基準6: RR比
-    if avg_rr < 0.8:
-        points -= 15
-        reasons.append(f"RR<0.8({avg_rr:.2f}) 損大利小")
-    elif avg_rr < 1.0:
-        points -= 8
-        reasons.append(f"RR<1.0({avg_rr:.2f})")
-
-    # 基準7: 最大連敗
-    if max_consec_loss >= 8:
-        points -= 15
-        reasons.append(f"連敗{max_consec_loss}回 メンタル崩壊リスク")
-    elif max_consec_loss >= 6:
-        points -= 8
-        reasons.append(f"連敗{max_consec_loss}回")
-
-    # 基準8: 累積リターンがマイナス = 即D
-    if total_return < 0:
-        points -= 20
-        reasons.append(f"マイナスリターン({total_return*100:.1f}%)")
-
-    # ポイントからグレード変換
-    if points >= 80:
-        grade = "S"
-    elif points >= 65:
-        grade = "A"
-    elif points >= 50:
-        grade = "B"
-    elif points >= 30:
-        grade = "C"
-    else:
-        grade = "D"
-
-    grade_map = {
-        "S": ("S  実戦投入可", "リアル資金で運用可能。ポジションサイズ管理のみ注意"),
-        "A": ("A  実戦準備完了", "小ロットで3ヶ月フォワードテスト後に本格運用"),
-        "B": ("B  条件付き使用", "S級シグナルのみ、ロット1/3、SL厳守で運用可"),
-        "C": ("C  要改善", "パラメータ調整必要。デモトレードのみ"),
-        "D": ("D  使用不可", "マイナス期待値。実資金投入禁止"),
-    }
-
-    label, advice = grade_map.get(grade, ("?", ""))
-    print(f"  グレード: {label}")
-    if reasons:
-        for r in reasons:
-            print(f"    - {r}")
-    print(f"  推奨: {advice}")
+    if pts >= 80: grade = "S"
+    elif pts >= 65: grade = "A"
+    elif pts >= 50: grade = "B"
+    elif pts >= 30: grade = "C"
+    else: grade = "D"
 
     return {
-        "trades": len(trades), "win_rate": win_rate, "pf": profit_factor,
-        "sharpe": sharpe, "max_dd": max_dd, "return": total_return,
-        "rr": avg_rr, "grade": grade
+        "name": name, "n": len(trades), "wr": wr, "pf": pf, "sharpe": sharpe,
+        "mdd": mdd, "rr": rr, "ret": ret, "grade": grade,
+        "tp": tp_n, "sl": sl_n, "tm": tm_n, "avg_w": avg_w, "avg_l": avg_l
     }
 
 
@@ -899,59 +629,74 @@ def run_backtest(data, min_score=45, is_daily=False,
 #  メイン
 # ============================================================
 if __name__ == "__main__":
-    results = []
-
     print("#" * 60)
-    print("  戦略改修テスト: BB突破 + 即利確 vs 逆張り")
+    print("  マルチ戦略バックテスト（厳格判定）")
     print("#" * 60)
 
-    # BTC 4Hデータ取得
-    print("\nBTC 4H データ取得中...")
-    data_4h = fetch_ohlcv("BTC_USDT", "4h")
+    # Wrapper functions that match the unified interface
+    def sig_rsi_div(i, C, H, L, rsi, atr, e9, e21, e50, bbU, bbB, bbL, vol, volSMA, O):
+        return strat_rsi_divergence(i, C, H, L, rsi, atr, e50)
 
-    if data_4h and len(data_4h) >= 100:
-        print(f"  → {len(data_4h)} bars")
+    def sig_ema_cross(i, C, H, L, rsi, atr, e9, e21, e50, bbU, bbB, bbL, vol, volSMA, O):
+        return strat_ema_cross(i, C, e9, e21, e50, atr, rsi)
 
-        # 戦略A: 即利確型（TP 1.0×ATR, SL 1.5×ATR）
-        configs = [
-            ("A1 即利確",     30, 55, 1.5, 1.0, 0.8, 5),
-            ("A2 即利確広SL", 30, 55, 2.0, 1.0, 0.8, 5),
-            ("A3 即利確+高確信", 30, 62, 1.5, 1.0, 0.8, 5),
-            ("A4 微利確",     25, 52, 1.0, 0.5, 0.5, 3),
-            ("A5 TP1.5",     30, 55, 2.0, 1.5, 1.2, 8),
-        ]
-        for label, ms, mdp, sl, tp, tr, mh in configs:
-            r = run_backtest(data_4h, min_score=ms, is_daily=False,
-                             sl_atr_mult=sl, tp_atr_mult=tp,
-                             trail_atr_mult=tr, max_hold=mh, min_dir_prob=mdp)
-            if r: results.append((label, r))
+    def sig_rsi_extreme(i, C, H, L, rsi, atr, e9, e21, e50, bbU, bbB, bbL, vol, volSMA, O):
+        return strat_rsi_extreme(i, C, H, L, rsi, atr, bbL, bbU, vol, volSMA)
 
-    # ETH, SOLも即利確型で
-    for sym, name in [("ETH_USDT", "ETH"), ("SOL_USDT", "SOL")]:
-        print(f"\n{name} 4H データ取得中...")
-        d = fetch_ohlcv(sym, "4h")
-        if d and len(d) >= 100:
-            print(f"  → {len(d)} bars")
-            r = run_backtest(d, min_score=30, is_daily=False,
-                             sl_atr_mult=1.5, tp_atr_mult=1.0,
-                             trail_atr_mult=0.8, max_hold=5, min_dir_prob=55)
-            if r: results.append((f"{name} 即利確", r))
+    def sig_pullback(i, C, H, L, rsi, atr, e9, e21, e50, bbU, bbB, bbL, vol, volSMA, O):
+        return strat_trend_pullback(i, C, H, L, e21, e50, rsi, atr)
 
-    # === 総合サマリー ===
-    if results:
-        total_trades = sum(r["trades"] for _, r in results)
-        total_wins = sum(r["trades"] * r["win_rate"] / 100 for _, r in results)
+    def sig_macd_div(i, C, H, L, rsi, atr, e9, e21, e50, bbU, bbB, bbL, vol, volSMA, O):
+        return strat_macd_divergence(i, C, H, L, e9, e21, rsi)
 
-        print(f"\n\n{'#'*60}")
-        print(f"  総合サマリー（4H-C設定 全市場）")
-        print("#" * 60)
-        print(f"  {'市場':<12} {'G':>2} {'N':>4} {'勝率':>6} {'PF':>6} {'Sharpe':>7} {'DD':>6} {'RR':>5} {'リターン':>8}")
-        print(f"  {'-'*60}")
-        for label, r in results:
-            print(f"  {label:<12} {r['grade']:>2} {r['trades']:>4} "
-                  f"{r['win_rate']:>5.1f}% {r['pf']:>5.2f} {r['sharpe']:>7.2f} "
-                  f"{r['max_dd']*100:>5.1f}% {r['rr']:>4.2f} {r['return']*100:>+7.2f}%")
-        print(f"  {'-'*60}")
-        agg_wr = total_wins / total_trades * 100 if total_trades > 0 else 0
-        print(f"  {'合計':<12}    {total_trades:>4} {agg_wr:>5.1f}%")
-        print(f"\n  結論: {'データ量で優位性確認' if total_trades >= 50 and agg_wr >= 50 else '要追加検証'}")
+    strategies = [
+        # (name, func, sl_atr, tp_atr, trail, max_hold)
+        ("RSIダイバ",       sig_rsi_div,    1.5, 2.0, 1.2, 12),
+        ("RSIダイバ広",     sig_rsi_div,    2.0, 2.5, 1.5, 15),
+        ("EMAクロス",       sig_ema_cross,  1.5, 2.0, 1.2, 12),
+        ("EMAクロス広",     sig_ema_cross,  2.0, 3.0, 1.8, 20),
+        ("RSI極端値",       sig_rsi_extreme,1.5, 2.0, 1.2, 8),
+        ("RSI極端値広",     sig_rsi_extreme,2.0, 1.5, 1.0, 6),
+        ("押し目/戻り",     sig_pullback,   1.5, 2.0, 1.2, 10),
+        ("MACDダイバ",      sig_macd_div,   1.5, 2.0, 1.2, 12),
+    ]
+
+    all_results = []
+
+    for sym, sym_name in [("BTC_USDT", "BTC"), ("ETH_USDT", "ETH"), ("SOL_USDT", "SOL")]:
+        print(f"\n{'='*60}")
+        print(f"  {sym_name} 4H")
+        print(f"{'='*60}")
+        data = fetch_ohlcv(sym, "4h")
+        if not data or len(data) < 100:
+            print(f"  [SKIP] データ不足")
+            continue
+        print(f"  {len(data)} bars")
+
+        for sname, sfunc, sl, tp, tr, mh in strategies:
+            label = f"{sym_name} {sname}"
+            r = run_strategy(label, data, sfunc, sl_atr=sl, tp_atr=tp,
+                             trail_atr=tr, max_hold=mh)
+            if r:
+                all_results.append(r)
+
+    # Summary
+    print(f"\n\n{'#'*60}")
+    print(f"  総合サマリー（厳格判定）")
+    print("#" * 60)
+    print(f"  {'戦略':<20} {'G':>2} {'N':>4} {'勝率':>6} {'PF':>6} {'Sharpe':>7} {'DD':>6} {'RR':>5} {'Ret':>8} {'TP':>3} {'SL':>3}")
+    print(f"  {'-'*74}")
+    for r in sorted(all_results, key=lambda x: -x["ret"]):
+        print(f"  {r['name']:<20} {r['grade']:>2} {r['n']:>4} "
+              f"{r['wr']:>5.1f}% {r['pf']:>5.2f} {r['sharpe']:>7.2f} "
+              f"{r['mdd']*100:>5.1f}% {r['rr']:>4.2f} {r['ret']*100:>+7.2f}% "
+              f"{r['tp']:>3} {r['sl']:>3}")
+
+    # Best
+    profitable = [r for r in all_results if r["ret"] > 0 and r["pf"] > 1.0]
+    print(f"\n  プラス期待値: {len(profitable)}/{len(all_results)} 戦略")
+    if profitable:
+        best = max(profitable, key=lambda x: x["sharpe"])
+        print(f"  ベスト: {best['name']} (Sharpe {best['sharpe']:.2f}, PF {best['pf']:.2f}, {best['grade']})")
+    else:
+        print(f"  *** プラス期待値の戦略なし ***")
