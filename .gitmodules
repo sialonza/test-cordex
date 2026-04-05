@@ -19,3 +19,6 @@
 [submodule "tradingview-mcp"]
 	path = tradingview-mcp
 	url = https://github.com/tradesdontlie/tradingview-mcp.git
+[submodule "tmai-api"]
+	path = tmai-api
+	url = https://github.com/token-metrics/tmai-api.git
