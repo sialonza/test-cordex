@@ -22,6 +22,7 @@ from scrapers import DopaScraper
 from ev_engine import compute_ev, format_ev_report
 from notify import notify_all, notify_console
 from pricing import enrich_prizes_with_market_prices
+from trust import effective_ev, record_purchase, site_stats
 
 
 def get_scrapers(mock_file: str = None, har_file: str = None,
@@ -62,13 +63,25 @@ def scan_once(scrapers, use_market_prices: bool = True, threshold: float = 1.0,
                 listing = enrich_prizes_with_market_prices(listing)
 
             ev = compute_ev(listing, use_market_value=use_market_prices)
+
+            # 信頼係数で割り引いた実効EVを重ね掛け
+            eff = effective_ev(listing.site, ev["ev"], ev["rtp"])
+            ev["effective_ev"] = eff["effective_ev"]
+            ev["effective_rtp"] = eff["effective_rtp"]
+            ev["trust"] = eff["trust"]
+            ev["flags"] = eff["flags"]
+
             all_results.append((listing, ev))
 
             if verbose:
                 print("  " + format_ev_report(listing, ev).replace("\n", "\n  "))
+                if eff["flags"]:
+                    for f in eff["flags"]:
+                        print(f"     {f}")
+                print(f"     trust={eff['trust']} → 実効RTP {eff['effective_rtp']*100:.1f}%")
 
-            # アラート判定
-            if ev["rtp"] >= threshold:
+            # アラート判定: 実効RTPが閾値超え かつ 赤旗なし
+            if eff["effective_rtp"] >= threshold and not eff["flags"]:
                 alert_msg = (
                     f"+EV オリパ検出！\n"
                     f"{format_ev_report(listing, ev)}\n"
@@ -138,8 +151,34 @@ def main():
                         help="実勢価格ルックアップをスキップ")
     parser.add_argument("--inspect", type=str, help="特定オリパIDの詳細表示")
     parser.add_argument("--quiet", action="store_true", help="詳細出力を抑制")
+    parser.add_argument("--trust", type=str, metavar="SITE",
+                        help="サイトの信頼度統計を表示")
+    parser.add_argument("--record", nargs=6,
+                        metavar=("SITE", "ID", "NAME", "PRICE", "PACKS", "ACTUAL"),
+                        help="購入結果を記録: site id name pack_price packs actual_return")
 
     args = parser.parse_args()
+
+    if args.trust:
+        import pprint
+        pprint.pprint(site_stats(args.trust))
+        return
+
+    if args.record:
+        site, oid, name, price, packs, actual = args.record
+        # 計算EVは現在のスキャン結果から拾う
+        scrapers_tmp = get_scrapers(mock_file=args.mock, har_file=args.har,
+                                    cookie=args.cookie)
+        calc_ev_per_pack = 0.0
+        for s in scrapers_tmp:
+            for l in s.fetch_pools():
+                if l.oripa_id == oid:
+                    calc_ev_per_pack = compute_ev(l)["ev"]
+        record_purchase(site, oid, name, float(price), int(packs),
+                        calc_ev_per_pack, float(actual))
+        print(f"recorded: {site}/{oid} calc_ev={calc_ev_per_pack:.0f} "
+              f"actual={float(actual):.0f}")
+        return
 
     if args.inspect:
         inspect(args.inspect, mock_file=args.mock)
