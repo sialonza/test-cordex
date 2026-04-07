@@ -24,10 +24,11 @@ from notify import notify_all, notify_console
 from pricing import enrich_prizes_with_market_prices
 
 
-def get_scrapers(mock_file: str = None):
+def get_scrapers(mock_file: str = None, har_file: str = None,
+                 cookie: str = None):
     """有効なスクレイパーのリストを返す"""
     return [
-        DopaScraper(mock_file=mock_file),
+        DopaScraper(mock_file=mock_file, har_file=har_file, cookie=cookie),
         # TODO: CloveScraper, IrisScraper, STOCKSScraper...
     ]
 
@@ -128,6 +129,9 @@ def main():
     parser.add_argument("--watch", action="store_true", help="継続監視")
     parser.add_argument("--interval", type=int, default=300, help="監視間隔（秒）")
     parser.add_argument("--mock", type=str, help="モックJSONファイル")
+    parser.add_argument("--har", type=str, help="DevToolsエクスポートHARファイル")
+    parser.add_argument("--cookie", type=str,
+                        help="DOPAセッションCookie（省略時は env DOPA_COOKIE）")
     parser.add_argument("--threshold", type=float, default=1.0,
                         help="アラート閾値（RTP、1.0=100%%）")
     parser.add_argument("--no-prices", action="store_true",
@@ -141,7 +145,8 @@ def main():
         inspect(args.inspect, mock_file=args.mock)
         return
 
-    scrapers = get_scrapers(mock_file=args.mock)
+    scrapers = get_scrapers(mock_file=args.mock, har_file=args.har,
+                            cookie=args.cookie)
     use_prices = not args.no_prices
     verbose = not args.quiet
 
