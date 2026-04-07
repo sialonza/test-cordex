@@ -1,0 +1,56 @@
+{
+  "oripas": [
+    {
+      "id": "dopa_001",
+      "name": "ポケモン激熱オリパ Vol.3",
+      "pack_price": 1000,
+      "total_packs": 500,
+      "remaining_packs": 280,
+      "is_transparent": true,
+      "is_finite": true,
+      "last_one_value": 30000,
+      "url": "https://dopa-game.jp/oripa/001",
+      "prizes": [
+        {"name": "リザードンex SAR", "count_total": 1, "count_remaining": 1, "stated_value": 150000, "rarity": "SAR"},
+        {"name": "ピカチュウex UR", "count_total": 2, "count_remaining": 1, "stated_value": 30000, "rarity": "UR"},
+        {"name": "ミュウツーex SR", "count_total": 5, "count_remaining": 3, "stated_value": 8000, "rarity": "SR"},
+        {"name": "ポケモンカード各種 R", "count_total": 50, "count_remaining": 25, "stated_value": 500, "rarity": "R"},
+        {"name": "ポケモンカード各種 C", "count_total": 442, "count_remaining": 250, "stated_value": 50, "rarity": "C"}
+      ]
+    },
+    {
+      "id": "dopa_002",
+      "name": "ポケモン爆アツ高額オリパ",
+      "pack_price": 5000,
+      "total_packs": 100,
+      "remaining_packs": 20,
+      "is_transparent": true,
+      "is_finite": true,
+      "last_one_value": 50000,
+      "url": "https://dopa-game.jp/oripa/002",
+      "prizes": [
+        {"name": "リザードン 1st PSA10", "count_total": 1, "count_remaining": 1, "stated_value": 500000, "rarity": "PSA10"},
+        {"name": "ポケモンカード SAR各種", "count_total": 3, "count_remaining": 2, "stated_value": 50000, "rarity": "SAR"},
+        {"name": "ポケモンカード SR各種", "count_total": 10, "count_remaining": 5, "stated_value": 5000, "rarity": "SR"},
+        {"name": "ポケモンカード C各種", "count_total": 86, "count_remaining": 12, "stated_value": 200, "rarity": "C"}
+      ]
+    },
+    {
+      "id": "dopa_003",
+      "name": "ワンピースカード お手軽オリパ",
+      "pack_price": 500,
+      "total_packs": 1000,
+      "remaining_packs": 850,
+      "is_transparent": true,
+      "is_finite": true,
+      "last_one_value": 0,
+      "url": "https://dopa-game.jp/oripa/003",
+      "prizes": [
+        {"name": "ルフィ リーダーパラレル", "count_total": 1, "count_remaining": 1, "stated_value": 80000, "rarity": "L-P"},
+        {"name": "ワンピカード SR各種", "count_total": 15, "count_remaining": 13, "stated_value": 3000, "rarity": "SR"},
+        {"name": "ワンピカード R各種", "count_total": 100, "count_remaining": 85, "stated_value": 300, "rarity": "R"},
+        {"name": "ワンピカード C各種", "count_total": 884, "count_remaining": 751, "stated_value": 30, "rarity": "C"}
+      ]
+    }
+  ]
+}
